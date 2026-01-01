@@ -166,4 +166,3 @@ Developed by the **DataMind project team (VMASH)**
 - Akhilkumar S
 
 **Cochin University of Science and Technology (CUSAT)**
-

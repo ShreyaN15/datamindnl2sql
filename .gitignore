@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 venv/
 training/datasets/
+models/t5-nl2sql/

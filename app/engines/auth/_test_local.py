@@ -3,7 +3,7 @@
 Run this directly (python -m app.engines.auth._test_local) to exercise the
 pure-Python engine functions without FastAPI.
 """
-from app.engines.auth import service
+from . import service
 
 
 def _run():

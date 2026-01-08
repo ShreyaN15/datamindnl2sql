@@ -136,6 +136,59 @@ http://localhost:8000/docs
 - Do not add logic to API routes
 - Training and inference must remain separate
 
+## Environment variables
+
+Copy `.env.example` to `.env` and set the required values for local development and production.
+
+- `AUTH_JWT_SECRET`: JWT signing secret (REPLACE with a strong secret in production).
+- `AUTH_DB_URL`: SQLAlchemy DSN for auth users (defaults to `sqlite:///./auth_users.db` if unset). Example Postgres DSN: `postgresql+psycopg2://user:pass@host:5432/datamind_auth`.
+- `REDIS_URL`: Optional Redis URL to enable Redis-backed sessions (if unset, sessions are in-memory).
+- `APP_ENCRYPTION_KEY`: Fernet key (base64) to encrypt stored DB credentials. Generate with:
+
+```bash
+python - <<'PY'
+from cryptography.fernet import Fernet
+print(Fernet.generate_key().decode())
+PY
+```
+
+- `AUTH_JWT_EXP_SECONDS`: Optional token TTL in seconds (default `3600`).
+
+## Local development checklist
+
+1. Copy `.env.example` to `.env` and fill values.
+2. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+3. (Optional) Create a Postgres DB and set `AUTH_DB_URL` if you prefer Postgres for auth users.
+
+4. Start the app:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+5. Test the auth endpoints with curl or Postman:
+
+```bash
+# Signup
+curl -X POST http://127.0.0.1:8000/auth/signup -H 'Content-Type: application/json' -d '{"email":"tester@example.com","password":"strong_password"}'
+
+# Login
+curl -X POST http://127.0.0.1:8000/auth/login -H 'Content-Type: application/json' -d '{"email":"tester@example.com","password":"strong_password"}'
+
+# Use the returned access_token as Bearer for protected endpoints
+```
+
+6. Run unit tests:
+
+```bash
+pytest -q
+```
+
 ---
 
 ##  Academic Context

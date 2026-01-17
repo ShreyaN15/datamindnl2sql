@@ -7,6 +7,7 @@ venv/
 # ML Models and Training Data (too large for GitHub)
 datamind_t5/
 models/
+!models/README.md
 *.safetensors
 *.bin
 *.pt

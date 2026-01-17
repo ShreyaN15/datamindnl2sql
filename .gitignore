@@ -1,3 +1,29 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 venv/
+datamind_t5
+
+# Logs
+logs/*.log
+logs/*.pid
+
+# Test outputs
+tests/test_nl2sql_output.txt
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+server.log

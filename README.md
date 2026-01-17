@@ -3,78 +3,184 @@
 DataMind is a full-stack system that allows users to query relational databases using **natural language** instead of SQL.  
 It converts English queries into safe, read-only SQL, executes them on user-provided databases, and returns results with clear visualizations.
 
-This project is built as a **modular, single FastAPI application** with a strong focus on:
-- Clean architecture
-- Security
-- Explainability
-- Separation of concerns
+This project features:
+
+- **Automatic schema inference** with multi-method foreign key detection
+- **T5-based NL2SQL generation** with schema context
+- **Clean web interface** built with Next.js
+- **Production-ready architecture** with FastAPI backend
+
+---
+
+## 🚀 Quick Start
+
+### One-Command Startup
+
+```bash
+./start.sh
+```
+
+This will:
+
+- Kill any processes blocking ports 8000 and 3000
+- Start the backend API on http://localhost:8000
+- Start the frontend on http://localhost:3000
+- Display logs and status
+
+**To stop all services:**
+
+```bash
+./stop.sh
+```
+
+### Manual Startup
+
+**Backend:**
+
+```bash
+source venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+**Frontend:**
+
+```bash
+cd frontend
+npm run dev
+```
 
 ---
 
 ## Key Features
 
-- Natural Language → SQL using a Transformer (T5)
-- Schema-aware query generation
-- Read-only, safe SQL execution
-- Automatic result visualization
-- Multi-user, multi-database support
-- Clear engine-based architecture
-- Offline model training, online inference only
+- ✅ **Automatic Schema Inference** - Extracts tables, columns, and foreign keys automatically
+- ✅ **Multi-Method FK Detection** - Explicit constraints + naming pattern inference
+- ✅ **NL2SQL Generation** - T5 transformer model trained on Spider dataset
+- ✅ **Schema-Aware Queries** - Model receives full schema context including relationships
+- ✅ **Web Interface** - Modern React/Next.js UI with TypeScript
+- ✅ **Multi-Database Support** - PostgreSQL, MySQL, SQLite
+- ✅ **Authentication & Authorization** - Secure JWT-based auth
+- ✅ **Real-Time Schema Refresh** - Update schema when database changes
 
 ---
 
-##  System Architecture (High Level)
+## System Architecture
 
 ```
-User
-→ Auth & Session
-→ Database Engine (schema + connection)
-→ Preprocessing
-→ Schema Linking
-→ Schema Expansion
-→ ML Model (NL → SQL)
-→ SQL Validation
-→ Execution
-→ Visualization
-→ User
+┌─────────────────┐
+│   Next.js UI    │  Port 3000
+│  (TypeScript)   │
+└────────┬────────┘
+         │ HTTP API
+         │
+┌────────▼────────┐
+│  FastAPI Backend│  Port 8000
+│   (Python)      │
+└────┬────────┬───┘
+     │        │
+     │        └─────────────┐
+     │                      │
+┌────▼─────┐      ┌────────▼────────┐
+│PostgreSQL│      │  T5 NL2SQL Model│
+│  (User   │      │  (Transformer)  │
+│   Data)  │      └─────────────────┘
+└──────────┘
+     │
+     └──────────────┐
+                    │
+          ┌─────────▼────────┐
+          │  Target Database │
+          │  (PostgreSQL)    │
+          └──────────────────┘
 ```
 
-- **FastAPI** acts only as an orchestrator
-- All logic is encapsulated in internal engines
-- Training and inference are strictly separated
+**Engine-based architecture:**
+
+- Authentication Engine
+- Database Connection Engine
+- Schema Inference Engine
+- Preprocessing Engine
+- Schema Linking Engine
+- ML Inference Engine
+- SQL Validation Engine
+- Execution Engine
+- Visualization Engine
 
 ---
 
-##  Repository Structure
+## Repository Structure
 
 ```
-datamind/
-├── app/                         # FastAPI application (runtime only)
-├── training/                    # Offline model training scripts
-├── models/                      # Frozen ML artifacts (T5)
-├── docs/                        # Architecture & training docs
-├── requirements.txt
-├── README.md
-└── DEVELOPER_GUIDELINES.md
+datamindnl2sql/
+├── app/                         # FastAPI Backend
+│   ├── api/                    # API endpoints (auth, db, query)
+│   ├── core/                   # Core config & security
+│   ├── db/                     # Database models & session
+│   ├── engines/                # Business logic engines
+│   │   ├── auth/              # Authentication service
+│   │   ├── database/          # Database connection service
+│   │   ├── schema_expansion/  # Schema inference service
+│   │   ├── ml/                # NL2SQL model inference
+│   │   ├── preprocessing/     # Query preprocessing
+│   │   └── ...
+│   ├── schemas/               # Pydantic models
+│   ├── utils/                 # Utilities
+│   └── main.py                # FastAPI app entry point
+│
+├── frontend/                   # Next.js Frontend
+│   ├── app/                   # Next.js App Router
+│   ├── components/            # React components
+│   ├── lib/                   # API client
+│   ├── types/                 # TypeScript types
+│   └── package.json
+│
+├── datamind_t5/               # ML Model & Training
+│   ├── final_finetuned/       # Trained T5 model
+│   ├── spider/                # Training dataset
+│   ├── train.py               # Training script
+│   └── infer.py               # Inference script
+│
+├── tests/                     # Test files
+│   ├── test_postgres_schema.py
+│   ├── test_nl2sql_postgres.py
+│   ├── setup_postgres_test.sql
+│   └── README.md
+│
+├── docs/                      # Documentation
+│   ├── architecture.md
+│   ├── training.md
+│   └── SCHEMA_INFERENCE.md
+│
+├── logs/                      # Runtime logs (gitignored)
+│   ├── backend.log
+│   └── frontend.log
+│
+├── start.sh                   # One-command startup script
+├── stop.sh                    # Stop all services
+├── requirements.txt           # Python dependencies
+├── DEMO_GUIDE.md             # Full demo walkthrough
+├── SYSTEM_STATUS.md          # Current system status
+└── README.md                 # This file
 ```
 
 ---
 
-##  Core Engines
+## Core Engines
 
-| Engine | Responsibility |
-|--------|----------------|
-| Auth & Session | User authentication, session state |
-| Database | DB connection, schema introspection |
-| Preprocessing | Query normalization |
-| Schema Linking | Map NL terms → schema candidates |
-| Schema Expansion | Final schema & join selection |
-| ML (Inference) | Generate SQL from NL |
-| SQL Validation | Enforce safety & read-only rules |
-| Execution | Run validated SQL |
-| Visualization | Tables & charts |
+| Engine           | Responsibility                      |
+| ---------------- | ----------------------------------- |
+| Auth & Session   | User authentication, session state  |
+| Database         | DB connection, schema introspection |
+| Preprocessing    | Query normalization                 |
+| Schema Linking   | Map NL terms → schema candidates    |
+| Schema Expansion | Final schema & join selection       |
+| ML (Inference)   | Generate SQL from NL                |
+| SQL Validation   | Enforce safety & read-only rules    |
+| Execution        | Run validated SQL                   |
+| Visualization    | Tables & charts                     |
 
 **Each engine:**
+
 - Has one responsibility
 - Does not call other engines
 - Is orchestrated by FastAPI
@@ -92,7 +198,7 @@ datamind/
 
 ---
 
-##  Machine Learning
+## Machine Learning
 
 - **Model:** T5 (Transformer)
 - **Task:** Natural Language → SQL
@@ -107,7 +213,7 @@ datamind/
 
 ---
 
-##  Running the Application
+## Running the Application
 
 ### 1. Install dependencies
 
@@ -127,9 +233,41 @@ uvicorn app.main:app --reload
 http://localhost:8000/docs
 ```
 
+### 4. Quick Start with NL2SQL
+
+The application includes a ready-to-use NL2SQL endpoint that converts natural language questions to SQL:
+
+```bash
+# See the quick start guide
+cat QUICKSTART_NL2SQL.md
+
+# Test the service
+python test_nl2sql.py
+```
+
+**Example API Request:**
+
+```bash
+curl -X POST "http://localhost:8000/query/nl2sql" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "How many users are from USA?",
+    "schema": {
+      "users": ["id", "name", "email", "country"]
+    },
+    "use_sanitizer": true
+  }'
+```
+
+For detailed documentation on the NL2SQL endpoint, see:
+
+- `QUICKSTART_NL2SQL.md` - Quick start guide
+- `docs/nl2sql_integration.md` - Full integration documentation
+- `NL2SQL_IMPLEMENTATION_SUMMARY.md` - Implementation details
+
 ---
 
-##  Developer Notes
+## Developer Notes
 
 - Follow `DEVELOPER_GUIDELINES.md` strictly
 - Do not introduce cross-engine imports
@@ -138,7 +276,7 @@ http://localhost:8000/docs
 
 ---
 
-##  Academic Context
+## Academic Context
 
 This project is developed as part of a **B.Tech Computer Science & Engineering Major Project** and demonstrates:
 
@@ -149,7 +287,7 @@ This project is developed as part of a **B.Tech Computer Science & Engineering M
 
 ---
 
-##  Disclaimer
+## Disclaimer
 
 This system is designed for **read-only analytics** and **educational purposes**.  
 It is not intended for production database modification or unrestricted SQL access.
@@ -158,7 +296,8 @@ It is not intended for production database modification or unrestricted SQL acce
 
 ## Team
 
-Developed by the **DataMind project team (VMASH)**  
+Developed by the **DataMind project team (VMASH)**
+
 - Haigovind M G
 - Shreya Nair
 - Vaishna T A

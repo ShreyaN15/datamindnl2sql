@@ -25,3 +25,7 @@ loguru>=0.7.0
 torch>=2.0.0
 transformers>=4.30.0
 sentencepiece>=0.1.99
+
+# -------- SQL Processing --------
+sqlparse>=0.4.4
+sqlglot>=20.0.0

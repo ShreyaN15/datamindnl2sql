@@ -3,7 +3,16 @@ __pycache__/
 *.pyo
 *.pyd
 venv/
-datamind_t5
+
+# ML Models and Training Data (too large for GitHub)
+datamind_t5/
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.h5
 
 # Logs
 logs/*.log

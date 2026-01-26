@@ -57,9 +57,24 @@ export interface NL2SQLRequest {
     to_column: string;
   }>;
   use_sanitizer?: boolean;
+  execute_query?: boolean;
+  database_id?: number;
+}
+
+export interface QueryExecutionResult {
+  success: boolean;
+  data: Record<string, any>[];
+  columns: string[];
+  row_count: number;
+  has_more: boolean;
+  error?: string;
+  query_type?: string;
+  is_visualizable: boolean;
+  suggested_chart?: string;
 }
 
 export interface NL2SQLResponse {
   sql: string;
   question: string;
+  execution_result?: QueryExecutionResult;
 }

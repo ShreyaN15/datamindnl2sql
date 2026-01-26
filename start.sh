@@ -77,7 +77,8 @@ else
 fi
 
 # Start backend in background
-nohup uvicorn app.main:app --reload --port $BACKEND_PORT > logs/backend.log 2>&1 &
+# Use the venv's python directly instead of relying on PATH
+nohup "$PROJECT_ROOT/venv/bin/uvicorn" app.main:app --reload --port $BACKEND_PORT > logs/backend.log 2>&1 &
 BACKEND_PID=$!
 
 # Wait for backend to start

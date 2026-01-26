@@ -3,7 +3,7 @@ Query Request/Response Schemas
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 
 class ForeignKey(BaseModel):
@@ -34,6 +34,14 @@ class NL2SQLRequest(BaseModel):
         False, 
         description="Return detailed validation information"
     )
+    execute_query: bool = Field(
+        False,
+        description="Whether to execute the generated SQL query"
+    )
+    database_id: Optional[int] = Field(
+        None,
+        description="Database connection ID (required if execute_query is True)"
+    )
     
     class Config:
         json_schema_extra = {
@@ -52,21 +60,40 @@ class NL2SQLRequest(BaseModel):
                     }
                 ],
                 "use_sanitizer": True,
-                "return_details": False
+                "return_details": False,
+                "execute_query": False
             }
         }
+
+
+class QueryExecutionResult(BaseModel):
+    """Results from query execution"""
+    success: bool = Field(..., description="Whether query executed successfully")
+    data: List[Dict[str, Any]] = Field(..., description="Query result data")
+    columns: List[str] = Field(..., description="Column names")
+    row_count: int = Field(..., description="Number of rows returned")
+    has_more: bool = Field(..., description="Whether there are more rows (limited to 1000)")
+    error: Optional[str] = Field(None, description="Error message if execution failed")
+    query_type: Optional[str] = Field(None, description="Type of query (select, aggregate, etc)")
+    is_visualizable: bool = Field(False, description="Whether results can be visualized")
+    suggested_chart: Optional[str] = Field(None, description="Suggested chart type (bar, line, etc)")
 
 
 class NL2SQLResponse(BaseModel):
     """Response from NL2SQL conversion"""
     sql: str = Field(..., description="Generated SQL query")
     question: str = Field(..., description="Original question")
+    execution_result: Optional[QueryExecutionResult] = Field(
+        None,
+        description="Query execution results (if execute_query was True)"
+    )
     
     class Config:
         json_schema_extra = {
             "example": {
                 "sql": "SELECT COUNT(*) FROM users WHERE country = 'USA'",
-                "question": "How many users are from USA?"
+                "question": "How many users are from USA?",
+                "execution_result": None
             }
         }
 

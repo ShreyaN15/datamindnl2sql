@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from './AuthProvider';
-import { DatabaseConnection, SchemaInfo } from '@/types/api';
+import { DatabaseConnection, SchemaInfo, QueryExecutionResult } from '@/types/api';
 
 export default function NL2SQLQuery() {
   const { userId } = useAuth();
@@ -12,9 +12,11 @@ export default function NL2SQLQuery() {
   const [schema, setSchema] = useState<SchemaInfo | null>(null);
   const [question, setQuestion] = useState('');
   const [sql, setSql] = useState('');
+  const [executionResult, setExecutionResult] = useState<QueryExecutionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingSchema, setLoadingSchema] = useState(false);
   const [error, setError] = useState('');
+  const [executeQuery, setExecuteQuery] = useState(true);
 
   useEffect(() => {
     if (userId) {
@@ -48,6 +50,7 @@ export default function NL2SQLQuery() {
     const id = parseInt(connectionId);
     setSelectedConnection(id);
     setSql('');
+    setExecutionResult(null);
     loadSchema(id);
   };
 
@@ -58,6 +61,7 @@ export default function NL2SQLQuery() {
     setLoading(true);
     setError('');
     setSql('');
+    setExecutionResult(null);
 
     try {
       // Convert foreign keys to API format
@@ -68,14 +72,19 @@ export default function NL2SQLQuery() {
         to_column,
       }));
 
-      const response = await api.query.nl2sql({
+      const response = await api.query.nl2sql(userId!, {
         question,
         schema: schema.tables,
         foreign_keys: foreignKeys,
         use_sanitizer: true,
+        execute_query: executeQuery,
+        database_id: selectedConnection || undefined,
       });
 
       setSql(response.sql);
+      if (response.execution_result) {
+        setExecutionResult(response.execution_result);
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -206,29 +215,165 @@ export default function NL2SQLQuery() {
                   ))}
                 </div>
 
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="executeQuery"
+                    checked={executeQuery}
+                    onChange={(e) => setExecuteQuery(e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500"
+                  />
+                  <label htmlFor="executeQuery" className="text-sm text-gray-700">
+                    Execute query and show results
+                  </label>
+                </div>
+
                 <button
                   type="submit"
                   disabled={loading || !question.trim()}
                   className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 font-medium transition-colors w-full"
                 >
-                  {loading ? 'Generating SQL...' : 'Generate SQL'}
+                  {loading ? 'Generating SQL...' : executeQuery ? 'Generate & Execute SQL' : 'Generate SQL'}
                 </button>
               </form>
 
               {sql && (
-                <div className="bg-gray-900 text-green-400 p-4 rounded-lg">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-semibold text-sm">Generated SQL:</span>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(sql)}
-                      className="text-xs px-3 py-1 bg-gray-700 text-white rounded hover:bg-gray-600"
-                    >
-                      Copy
-                    </button>
+                <div className="space-y-4">
+                  <div className="bg-gray-900 text-green-400 p-4 rounded-lg">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="font-semibold text-sm">Generated SQL:</span>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(sql)}
+                        className="text-xs px-3 py-1 bg-gray-700 text-white rounded hover:bg-gray-600"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre className="overflow-x-auto text-sm font-mono">
+                      {sql}
+                    </pre>
                   </div>
-                  <pre className="overflow-x-auto text-sm font-mono">
-                    {sql}
-                  </pre>
+
+                  {executionResult && (
+                    <div className="space-y-4">
+                      {executionResult.success ? (
+                        <>
+                          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                            <div className="flex items-center gap-2 text-green-800 mb-2">
+                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                              </svg>
+                              <span className="font-semibold">Query Executed Successfully</span>
+                            </div>
+                            <div className="text-sm text-green-700">
+                              Returned {executionResult.row_count} row(s)
+                              {executionResult.has_more && ' (limited to 1000)'}
+                            </div>
+                          </div>
+
+                          {executionResult.data.length > 0 && (
+                            <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                              <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                                <h4 className="font-semibold text-gray-900">Query Results</h4>
+                              </div>
+                              <div className="overflow-x-auto max-h-96">
+                                <table className="w-full text-sm">
+                                  <thead className="bg-gray-100 sticky top-0">
+                                    <tr>
+                                      {executionResult.columns.map((col) => (
+                                        <th key={col} className="px-4 py-2 text-left font-semibold text-gray-700 border-b">
+                                          {col}
+                                        </th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {executionResult.data.map((row, idx) => (
+                                      <tr key={idx} className="hover:bg-gray-50 border-b">
+                                        {executionResult.columns.map((col) => (
+                                          <td key={col} className="px-4 py-2 text-gray-900">
+                                            {row[col] !== null && row[col] !== undefined ? String(row[col]) : '—'}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+
+                          {executionResult.is_visualizable && executionResult.data.length > 0 && (
+                            <div className="bg-white border border-gray-200 rounded-lg p-4">
+                              <h4 className="font-semibold text-gray-900 mb-4">Data Visualization</h4>
+                              <div className="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-lg p-8">
+                                {executionResult.suggested_chart === 'bar' && (
+                                  <div className="space-y-2">
+                                    {executionResult.data.slice(0, 10).map((row, idx) => {
+                                      const label = row[executionResult.columns[0]];
+                                      const value = row[executionResult.columns[1]];
+                                      const maxValue = Math.max(...executionResult.data.map(r => Number(r[executionResult.columns[1]]) || 0));
+                                      const percentage = maxValue > 0 ? (Number(value) / maxValue) * 100 : 0;
+                                      
+                                      return (
+                                        <div key={idx} className="flex items-center gap-2">
+                                          <div className="w-32 text-sm text-gray-700 truncate" title={String(label)}>
+                                            {String(label)}
+                                          </div>
+                                          <div className="flex-1 bg-gray-200 rounded-full h-6 relative">
+                                            <div 
+                                              className="bg-indigo-600 h-full rounded-full flex items-center justify-end pr-2"
+                                              style={{ width: `${percentage}%` }}
+                                            >
+                                              <span className="text-xs text-white font-medium">{String(value)}</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                
+                                {executionResult.suggested_chart === 'line' && (
+                                  <div className="text-center text-gray-600">
+                                    <svg className="w-16 h-16 mx-auto mb-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
+                                    </svg>
+                                    <p>Line chart visualization (Advanced charts coming soon)</p>
+                                  </div>
+                                )}
+                                
+                                {!['bar', 'line'].includes(executionResult.suggested_chart || '') && (
+                                  <div className="text-center text-gray-600">
+                                    <svg className="w-16 h-16 mx-auto mb-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
+                                    </svg>
+                                    <p>Data visualization (Chart type: {executionResult.suggested_chart})</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                          <div className="flex items-center gap-2 text-red-800 mb-2">
+                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                            </svg>
+                            <span className="font-semibold">Query Execution Failed</span>
+                          </div>
+                          <div className="text-sm text-red-700 font-mono bg-red-100 p-2 rounded mt-2">
+                            {executionResult.error}
+                          </div>
+                          <div className="text-sm text-red-600 mt-2">
+                            The SQL was generated but couldn't be executed. This might be due to syntax errors or data issues.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </>

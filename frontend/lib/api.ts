@@ -117,8 +117,8 @@ export const api = {
 
   // NL2SQL endpoint
   query: {
-    nl2sql: async (data: any) => {
-      const response = await fetch(`${API_URL}/query/nl2sql`, {
+    nl2sql: async (userId: number, data: any) => {
+      const response = await fetch(`${API_URL}/query/nl2sql?user_id=${userId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),

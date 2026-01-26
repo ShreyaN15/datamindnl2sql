@@ -7,6 +7,7 @@ Added complete query execution and visualization capabilities to the DataMind NL
 ## ✨ New Features
 
 ### 1. **SQL Query Execution**
+
 - Execute generated SQL queries directly against connected databases
 - Support for PostgreSQL, MySQL, and SQLite
 - Graceful error handling with detailed error messages
@@ -14,6 +15,7 @@ Added complete query execution and visualization capabilities to the DataMind NL
 - Query timeout protection (30 seconds)
 
 ### 2. **Results Display**
+
 - Tabular display of query results
 - Scrollable table with sticky headers
 - Clean formatting with null value handling
@@ -21,6 +23,7 @@ Added complete query execution and visualization capabilities to the DataMind NL
 - Visual success/error indicators
 
 ### 3. **Data Visualization**
+
 - Automatic detection of visualizable data
 - Bar chart visualization for categorical data
 - Support for aggregation queries
@@ -28,6 +31,7 @@ Added complete query execution and visualization capabilities to the DataMind NL
 - Gradient backgrounds for better aesthetics
 
 ### 4. **Error Handling**
+
 - SQL generation errors are caught and displayed
 - Execution errors show detailed error messages
 - Fallback behavior: SQL is still shown even if execution fails
@@ -38,13 +42,16 @@ Added complete query execution and visualization capabilities to the DataMind NL
 ### Backend Changes
 
 **New Files:**
+
 - `app/engines/execution/service.py` - Query execution engine with safety features
 
 **Updated Files:**
+
 - `app/api/query.py` - Added execution support to NL2SQL endpoint
 - `app/schemas/query.py` - Added execution result schemas
 
 **Key Features:**
+
 ```python
 class QueryExecutionService:
     - execute_query() - Execute SQL with timeout and row limits
@@ -56,10 +63,12 @@ class QueryExecutionService:
 ### Frontend Changes
 
 **Updated Files:**
+
 - `frontend/types/api.ts` - Added QueryExecutionResult interface
 - `frontend/components/NL2SQLQuery.tsx` - Complete UI overhaul
 
 **UI Components:**
+
 1. **Execution Toggle**
    - Checkbox to enable/disable query execution
    - Dynamic button text based on toggle state
@@ -85,8 +94,10 @@ class QueryExecutionService:
 ## 📊 Supported Visualizations
 
 ### Bar Chart
+
 **When:** 2 columns (1 categorical, 1 numeric)
 **Example Query:** "Count orders per user"
+
 ```
 User A: ████████████████ 15
 User B: ██████████ 10
@@ -94,22 +105,26 @@ User C: ████████ 8
 ```
 
 ### Line Chart (Placeholder)
+
 **When:** Multiple numeric columns
 **Note:** Currently shows placeholder, full implementation coming soon
 
 ### Other Charts
+
 **When:** Complex data patterns detected
 **Note:** Shows placeholder with chart type suggestion
 
 ## 🔒 Safety Features
 
 ### Query Execution Limits
+
 - **Row Limit:** Maximum 1000 rows returned
 - **Timeout:** 30 seconds max execution time
 - **Read-Only:** Only SELECT queries recommended
 - **Connection Pooling:** Automatic cleanup after execution
 
 ### Error Handling
+
 ```python
 try:
     # Execute query
@@ -159,6 +174,7 @@ curl -X POST http://localhost:8000/query/nl2sql \
 ```
 
 **Response:**
+
 ```json
 {
   "sql": "SELECT * FROM users",
@@ -166,8 +182,8 @@ curl -X POST http://localhost:8000/query/nl2sql \
   "execution_result": {
     "success": true,
     "data": [
-      {"id": 1, "username": "alice", "email": "alice@example.com"},
-      {"id": 2, "username": "bob", "email": "bob@example.com"}
+      { "id": 1, "username": "alice", "email": "alice@example.com" },
+      { "id": 2, "username": "bob", "email": "bob@example.com" }
     ],
     "columns": ["id", "username", "email"],
     "row_count": 2,
@@ -185,6 +201,7 @@ curl -X POST http://localhost:8000/query/nl2sql \
 ### Test Queries
 
 **Simple SELECT:**
+
 ```sql
 Question: "Show all users"
 Expected: SELECT * FROM users
@@ -192,6 +209,7 @@ Visualizable: No
 ```
 
 **Aggregation:**
+
 ```sql
 Question: "Count orders per user"
 Expected: SELECT user_id, COUNT(*) FROM orders GROUP BY user_id
@@ -199,6 +217,7 @@ Visualizable: Yes (Bar Chart)
 ```
 
 **TOP N:**
+
 ```sql
 Question: "Top 5 expensive products"
 Expected: SELECT * FROM products ORDER BY price DESC LIMIT 5
@@ -215,6 +234,7 @@ python test_query_execution.py
 ## 🎨 UI/UX Features
 
 ### Visual Indicators
+
 - ✅ Green success badge
 - ❌ Red error badge
 - 📊 Chart icon for visualizations
@@ -222,12 +242,14 @@ python test_query_execution.py
 - 📋 Copy SQL button
 
 ### Responsive Design
+
 - Scrollable tables
 - Responsive grid layouts
 - Mobile-friendly sizing
 - Overflow handling
 
 ### User Feedback
+
 - Clear error messages
 - Row count display
 - "Has more" indicators
@@ -236,12 +258,14 @@ python test_query_execution.py
 ## 📝 Example Workflows
 
 ### Workflow 1: Explore Data
+
 1. Connect to database
 2. Ask "Show all tables" → See schema
 3. Ask "Show first 10 users" → See data
 4. Ask "Count users by country" → See visualization
 
 ### Workflow 2: Data Analysis
+
 1. Connect to analytics database
 2. Ask "Total revenue by month"
 3. View bar chart of results
@@ -249,6 +273,7 @@ python test_query_execution.py
 5. Ask "Top 10 customers by revenue"
 
 ### Workflow 3: Error Recovery
+
 1. Ask complex question
 2. SQL generates correctly
 3. Execution fails (syntax error)
@@ -259,12 +284,14 @@ python test_query_execution.py
 ## 🔄 What Changed
 
 ### Before
+
 - SQL generation only
 - No execution capability
 - No result display
 - No visualization
 
 ### After
+
 - ✅ SQL generation (unchanged)
 - ✅ Optional query execution
 - ✅ Tabular results display
@@ -275,12 +302,14 @@ python test_query_execution.py
 ## 🚀 Future Enhancements
 
 ### Short Term
+
 - [ ] Line chart implementation
 - [ ] Pie chart support
 - [ ] Export results to CSV/JSON
 - [ ] Query history
 
 ### Long Term
+
 - [ ] Advanced chart library (Chart.js, Recharts)
 - [ ] Interactive visualizations
 - [ ] Query optimization suggestions
@@ -299,11 +328,13 @@ python test_query_execution.py
 ## 📦 Dependencies
 
 **Backend:**
+
 - `sqlalchemy` - Database connections
 - `psycopg2-binary` - PostgreSQL driver
 - `pymysql` - MySQL driver
 
 **Frontend:**
+
 - No new dependencies added
 - Pure React/TypeScript implementation
 
@@ -323,6 +354,7 @@ python test_query_execution.py
 The query execution and visualization feature is **fully implemented and ready to use**!
 
 **Access:** http://localhost:3000
+
 - Login/Register
 - Add database connection
 - Navigate to Query tab
@@ -330,6 +362,7 @@ The query execution and visualization feature is **fully implemented and ready t
 - Start asking questions!
 
 **Key Benefits:**
+
 - See actual data, not just SQL
 - Verify query correctness immediately
 - Visual insights with charts

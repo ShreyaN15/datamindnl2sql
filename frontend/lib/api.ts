@@ -7,7 +7,7 @@ export const api = {
       username: string,
       email: string,
       password: string,
-      fullName?: string
+      fullName?: string,
     ) => {
       const response = await fetch(`${API_URL}/auth/register`, {
         method: "POST",
@@ -44,7 +44,7 @@ export const api = {
   connections: {
     list: async (userId: number) => {
       const response = await fetch(
-        `${API_URL}/db/connections?user_id=${userId}`
+        `${API_URL}/db/connections?user_id=${userId}`,
       );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
@@ -57,7 +57,7 @@ export const api = {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
-        }
+        },
       );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
@@ -65,7 +65,7 @@ export const api = {
 
     get: async (userId: number, connectionId: number) => {
       const response = await fetch(
-        `${API_URL}/db/connections/${connectionId}?user_id=${userId}`
+        `${API_URL}/db/connections/${connectionId}?user_id=${userId}`,
       );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
@@ -76,7 +76,7 @@ export const api = {
         `${API_URL}/db/connections/${connectionId}?user_id=${userId}`,
         {
           method: "DELETE",
-        }
+        },
       );
       if (!response.ok) throw new Error(await response.text());
       return response.status === 204;
@@ -87,7 +87,7 @@ export const api = {
         `${API_URL}/db/connections/${connectionId}/test?user_id=${userId}`,
         {
           method: "POST",
-        }
+        },
       );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
@@ -96,10 +96,10 @@ export const api = {
     getSchema: async (
       userId: number,
       connectionId: number,
-      useCached: boolean = true
+      useCached: boolean = true,
     ) => {
       const response = await fetch(
-        `${API_URL}/db/connections/${connectionId}/schema?user_id=${userId}&use_cached=${useCached}`
+        `${API_URL}/db/connections/${connectionId}/schema?user_id=${userId}&use_cached=${useCached}`,
       );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
@@ -108,7 +108,7 @@ export const api = {
     refreshSchema: async (userId: number, connectionId: number) => {
       const response = await fetch(
         `${API_URL}/db/connections/${connectionId}/refresh-schema?user_id=${userId}`,
-        { method: "POST" }
+        { method: "POST" },
       );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
@@ -118,11 +118,14 @@ export const api = {
   // NL2SQL endpoint
   query: {
     nl2sql: async (userId: number, data: any) => {
-      const response = await fetch(`${API_URL}/query/nl2sql?user_id=${userId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
+      const response = await fetch(
+        `${API_URL}/query/nl2sql?user_id=${userId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        },
+      );
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     },

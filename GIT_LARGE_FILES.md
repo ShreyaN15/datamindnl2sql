@@ -44,6 +44,7 @@ models/               # Model artifacts (except README.md)
 ## Model Location
 
 The application uses models from:
+
 ```
 datamind_t5/final_finetuned/
 ├── model.safetensors      # ~850 MB (gitignored)
@@ -59,6 +60,7 @@ These files exist **locally only** and are **not pushed to GitHub**.
 If you clone this repository, you'll need to:
 
 1. **Option 1: Train the model yourself**
+
    ```bash
    cd datamind_t5
    python train.py
@@ -76,6 +78,7 @@ If you clone this repository, you'll need to:
 ## Best Practices for Large Files
 
 ### ❌ Don't Do This:
+
 ```bash
 git add models/          # Will try to add large files
 git add datamind_t5/     # Will try to add large files
@@ -83,6 +86,7 @@ git add *.safetensors    # Large model files
 ```
 
 ### ✅ Do This Instead:
+
 ```bash
 # Models are already gitignored, so git add . is safe
 git add .
@@ -101,11 +105,12 @@ For production, consider:
    - DVC (Data Version Control)
 
 2. **Cloud Storage**
+
    ```python
    # Download model at startup
    import boto3
    s3 = boto3.client('s3')
-   s3.download_file('my-bucket', 'models/model.safetensors', 
+   s3.download_file('my-bucket', 'models/model.safetensors',
                     'datamind_t5/final_finetuned/model.safetensors')
    ```
 
@@ -118,7 +123,9 @@ For production, consider:
 ## Troubleshooting
 
 ### "File size limit exceeded" error
+
 This means a large file is in your git history. Solution:
+
 ```bash
 # Remove from git tracking
 git rm --cached path/to/large/file
@@ -133,6 +140,7 @@ git push origin branch-name --force
 ```
 
 ### Model file accidentally committed
+
 ```bash
 # Before pushing
 git reset HEAD path/to/model/file

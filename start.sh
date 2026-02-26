@@ -140,7 +140,7 @@ echo -e "  Frontend: ${YELLOW}tail -f logs/frontend.log${NC}"
 echo ""
 
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║     🚀 DataMind is ready!             ║${NC}"
+echo -e "${GREEN}║         DataMind is ready!             ║${NC}"
 echo -e "${GREEN}║                                        ║${NC}"
 echo -e "${GREEN}║  Open: http://localhost:3000          ║${NC}"
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"

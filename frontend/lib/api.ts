@@ -129,5 +129,19 @@ export const api = {
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     },
+
+    visualize: async (data: {
+      query_result: any[];
+      column_info: Array<{ name: string; type: string }>;
+      sql_query: string;
+    }) => {
+      const response = await fetch(`${API_URL}/query/visualize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    },
   },
 };

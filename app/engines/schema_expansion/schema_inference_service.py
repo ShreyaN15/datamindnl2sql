@@ -322,6 +322,7 @@ class SchemaInferenceService:
     ) -> str:
         """
         Format schema in the exact format expected by the ML model.
+        Enhanced with better structure for improved accuracy.
         
         Format:
             TABLE table_name:
@@ -333,23 +334,32 @@ class SchemaInferenceService:
         """
         lines = []
         
+        # Build FK lookup for adding relationship context
+        fk_from_table = {}  # table -> list of (col, ref_table, ref_col)
+        for from_table, from_col, to_table, to_col in foreign_keys:
+            if from_table not in fk_from_table:
+                fk_from_table[from_table] = []
+            fk_from_table[from_table].append((from_col, to_table, to_col))
+        
         for table_name in sorted(tables.keys()):
             lines.append(f"TABLE {table_name}:")
+            
+            # Add columns with FK annotations
             for column_name in tables[table_name]:
-                lines.append(f"- {table_name}.{column_name}")
+                col_line = f"- {table_name}.{column_name}"
+                
+                # Check if this column is a foreign key
+                if table_name in fk_from_table:
+                    for fk_col, ref_table, ref_col in fk_from_table[table_name]:
+                        if fk_col == column_name:
+                            col_line += f" (references {ref_table}.{ref_col})"
+                            break
+                
+                lines.append(col_line)
+            
             lines.append("")  # Blank line between tables
         
-        schema_text = "\n".join(lines)
-        
-        # Optionally include FK info as comments (for debugging)
-        if foreign_keys:
-            fk_lines = ["\n# Foreign Key Relationships:"]
-            for from_table, from_col, to_table, to_col in foreign_keys:
-                fk_lines.append(f"# {from_table}.{from_col} -> {to_table}.{to_col}")
-            # Note: We include FKs in metadata, not in schema_text
-            # schema_text += "\n".join(fk_lines)
-        
-        return schema_text.strip()
+        return "\n".join(lines).strip()
     
     def _empty_schema(self) -> Dict:
         """Return empty schema structure"""

@@ -22,7 +22,7 @@ export default function AuthScreen() {
     try {
       if (isLogin) {
         const response = await api.auth.login(username, password);
-        login(response.user_id, response.username, response.email);
+        login(response.user.id, response.user.username, response.user.email);
       } else {
         const response = await api.auth.register(username, email, password, fullName);
         login(response.id, response.username, response.email);

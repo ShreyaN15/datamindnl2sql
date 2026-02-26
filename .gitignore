@@ -37,3 +37,10 @@ tests/test_nl2sql_output.txt
 *.code-workspace
 
 server.log
+tests/
+logs/
+PRESENTATION_MASTER_GUIDE.md
+
+docs/
+*.md 
+*.txt

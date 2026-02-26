@@ -11,10 +11,13 @@ from app.schemas.query import (
     NL2SQLRequest, 
     NL2SQLResponse, 
     NL2SQLDetailedResponse,
-    QueryExecutionResult
+    QueryExecutionResult,
+    VisualizationRequest,
+    VisualizationResponse
 )
 from app.engines.ml.nl2sql_service import get_nl2sql_service
 from app.engines.execution.service import get_execution_service
+from app.engines.visualization.analyzer import get_visualization_analyzer
 from app.utils.schema_builder import build_schema_from_dict
 from app.db.session import get_db
 from app.db.models import DatabaseConnection, User
@@ -187,4 +190,68 @@ async def nl2sql_health():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"NL2SQL service unavailable: {str(e)}"
         )
+
+
+@router.post(
+    "/visualize",
+    response_model=VisualizationResponse,
+    summary="Analyze query results for visualization",
+    description="Analyzes query results to determine if they can be visualized and recommends appropriate chart types"
+)
+async def analyze_visualization(
+    request: VisualizationRequest
+):
+    """
+    Analyze query results for visualization suitability.
+    
+    This endpoint examines the data structure and content to determine:
+    - Whether the data is suitable for visualization
+    - What type of chart would best represent the data
+    - How to format the data for frontend charting libraries
+    
+    **Features:**
+    - Intelligent data type detection (numeric, categorical, temporal)
+    - Automatic chart type recommendation (bar, line, pie, scatter)
+    - Detection of non-visualizable data (pure text, IDs, names)
+    - Formatted data output for Chart.js or similar libraries
+    
+    **Chart Selection Logic:**
+    - **Pie Chart**: Categorical data with aggregations (< 10 categories)
+    - **Bar Chart**: Comparing values across categories (< 30 categories)
+    - **Line Chart**: Trends over time (date/time series)
+    - **Scatter Plot**: Correlation between two numeric variables
+    - **Not Visualizable**: Text data, IDs, insufficient numeric data
+    
+    **Example Request:**
+    {
+      "query_result": [
+        {"department_name": "CS", "student_count": 45},
+        {"department_name": "Math", "student_count": 32}
+      ],
+      "column_info": [
+        {"name": "department_name", "type": "varchar"},
+        {"name": "student_count", "type": "integer"}
+      ],
+      "sql_query": "SELECT department_name, COUNT(*) as student_count FROM students GROUP BY department_name"
+    }
+    ```
+    """
+    try:
+        analyzer = get_visualization_analyzer()
+        
+        result = analyzer.analyze(
+            query_result=request.query_result,
+            column_info=request.column_info,
+            sql_query=request.sql_query
+        )
+        
+        return VisualizationResponse(**result)
+    
+    except Exception as e:
+        logger.error(f"Error analyzing visualization: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze visualization: {str(e)}"
+        )
+
 

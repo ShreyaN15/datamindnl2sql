@@ -4,6 +4,21 @@ import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { useAuth } from './AuthProvider';
 import { DatabaseConnection, SchemaInfo, QueryExecutionResult } from '@/types/api';
+import dynamic from 'next/dynamic';
+
+// Dynamically import DataVisualization to avoid SSR issues with Chart.js
+const DataVisualization = dynamic(() => import('./DataVisualization'), {
+  ssr: false,
+  loading: () => <div className="text-center py-8 text-gray-500">Loading chart...</div>,
+});
+
+interface VisualizationResult {
+  is_visualizable: boolean;
+  reason: string;
+  recommended_chart: string;
+  chart_config: any;
+  data: any;
+}
 
 export default function NL2SQLQuery() {
   const { userId } = useAuth();
@@ -13,8 +28,10 @@ export default function NL2SQLQuery() {
   const [question, setQuestion] = useState('');
   const [sql, setSql] = useState('');
   const [executionResult, setExecutionResult] = useState<QueryExecutionResult | null>(null);
+  const [visualization, setVisualization] = useState<VisualizationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingSchema, setLoadingSchema] = useState(false);
+  const [loadingVisualization, setLoadingVisualization] = useState(false);
   const [error, setError] = useState('');
   const [executeQuery, setExecuteQuery] = useState(true);
 
@@ -62,6 +79,7 @@ export default function NL2SQLQuery() {
     setError('');
     setSql('');
     setExecutionResult(null);
+    setVisualization(null);
 
     try {
       // Convert foreign keys to API format
@@ -89,6 +107,45 @@ export default function NL2SQLQuery() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleVisualize = async () => {
+    if (!executionResult || !executionResult.success || !executionResult.data.length) {
+      return;
+    }
+
+    setLoadingVisualization(true);
+    setError('');
+    setVisualization(null);
+
+    try {
+      // Prepare column info
+      const columnInfo = executionResult.columns.map((colName) => {
+        // Try to infer type from first row of data
+        const sampleValue = executionResult.data[0]?.[colName];
+        let type = 'varchar';
+        
+        if (typeof sampleValue === 'number') {
+          type = Number.isInteger(sampleValue) ? 'integer' : 'float';
+        } else if (sampleValue instanceof Date) {
+          type = 'datetime';
+        }
+        
+        return { name: colName, type };
+      });
+
+      const vizResult = await api.query.visualize({
+        query_result: executionResult.data,
+        column_info: columnInfo,
+        sql_query: sql,
+      });
+
+      setVisualization(vizResult);
+    } catch (err: any) {
+      setError(`Visualization error: ${err.message}`);
+    } finally {
+      setLoadingVisualization(false);
     }
   };
 
@@ -265,11 +322,60 @@ export default function NL2SQLQuery() {
                               </svg>
                               <span className="font-semibold">Query Executed Successfully</span>
                             </div>
-                            <div className="text-sm text-green-700">
-                              Returned {executionResult.row_count} row(s)
-                              {executionResult.has_more && ' (limited to 1000)'}
+                            <div className="flex items-center justify-between">
+                              <div className="text-sm text-green-700">
+                                Returned {executionResult.row_count} row(s)
+                                {executionResult.has_more && ' (limited to 1000)'}
+                              </div>
+                              <button
+                                onClick={handleVisualize}
+                                disabled={loadingVisualization || !executionResult.data.length}
+                                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-medium"
+                              >
+                                {loadingVisualization ? (
+                                  <>
+                                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                    </svg>
+                                    Analyzing...
+                                  </>
+                                ) : (
+                                  <>
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                    </svg>
+                                    Visualize Data
+                                  </>
+                                )}
+                              </button>
                             </div>
                           </div>
+
+                          {visualization && (
+                            visualization.is_visualizable && visualization.data ? (
+                              <DataVisualization
+                                chartType={visualization.recommended_chart}
+                                data={visualization.data}
+                                config={visualization.chart_config || {}}
+                              />
+                            ) : (
+                              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                <div className="flex items-start gap-3">
+                                  <svg className="w-5 h-5 text-yellow-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                                  </svg>
+                                  <div>
+                                    <h4 className="font-semibold text-yellow-900 mb-1">Cannot Visualize This Data</h4>
+                                    <p className="text-sm text-yellow-800">{visualization.reason}</p>
+                                    <p className="text-xs text-yellow-700 mt-2">
+                                      💡 Tip: Queries with aggregations (COUNT, AVG, SUM) and GROUP BY are usually visualizable.
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          )}
 
                           {executionResult.data.length > 0 && (
                             <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
@@ -299,59 +405,6 @@ export default function NL2SQLQuery() {
                                     ))}
                                   </tbody>
                                 </table>
-                              </div>
-                            </div>
-                          )}
-
-                          {executionResult.is_visualizable && executionResult.data.length > 0 && (
-                            <div className="bg-white border border-gray-200 rounded-lg p-4">
-                              <h4 className="font-semibold text-gray-900 mb-4">Data Visualization</h4>
-                              <div className="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-lg p-8">
-                                {executionResult.suggested_chart === 'bar' && (
-                                  <div className="space-y-2">
-                                    {executionResult.data.slice(0, 10).map((row, idx) => {
-                                      const label = row[executionResult.columns[0]];
-                                      const value = row[executionResult.columns[1]];
-                                      const maxValue = Math.max(...executionResult.data.map(r => Number(r[executionResult.columns[1]]) || 0));
-                                      const percentage = maxValue > 0 ? (Number(value) / maxValue) * 100 : 0;
-                                      
-                                      return (
-                                        <div key={idx} className="flex items-center gap-2">
-                                          <div className="w-32 text-sm text-gray-700 truncate" title={String(label)}>
-                                            {String(label)}
-                                          </div>
-                                          <div className="flex-1 bg-gray-200 rounded-full h-6 relative">
-                                            <div 
-                                              className="bg-indigo-600 h-full rounded-full flex items-center justify-end pr-2"
-                                              style={{ width: `${percentage}%` }}
-                                            >
-                                              <span className="text-xs text-white font-medium">{String(value)}</span>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                                
-                                {executionResult.suggested_chart === 'line' && (
-                                  <div className="text-center text-gray-600">
-                                    <svg className="w-16 h-16 mx-auto mb-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
-                                    </svg>
-                                    <p>Line chart visualization (Advanced charts coming soon)</p>
-                                  </div>
-                                )}
-                                
-                                {!['bar', 'line'].includes(executionResult.suggested_chart || '') && (
-                                  <div className="text-center text-gray-600">
-                                    <svg className="w-16 h-16 mx-auto mb-2 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
-                                    </svg>
-                                    <p>Data visualization (Chart type: {executionResult.suggested_chart})</p>
-                                  </div>
-                                )}
                               </div>
                             </div>
                           )}

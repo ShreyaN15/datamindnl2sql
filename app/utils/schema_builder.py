@@ -16,6 +16,7 @@ def build_schema_from_dict(
 ) -> Tuple[str, List[Tuple[str, str, str, str]]]:
     """
     Create schema text from a dictionary.
+    Enhanced to include foreign key annotations for better accuracy.
     
     Args:
         tables_dict: {"table_name": ["col1", "col2", ...], ...}
@@ -32,24 +33,43 @@ def build_schema_from_dict(
         >>> fks = [("orders", "user_id", "users", "id")]
         >>> schema_text, fks = build_schema_from_dict(schema_dict, fks)
     """
+    fk_list = foreign_keys or []
+    
+    # Build FK lookup for annotations
+    fk_from_table = {}
+    for from_table, from_col, to_table, to_col in fk_list:
+        if from_table not in fk_from_table:
+            fk_from_table[from_table] = []
+        fk_from_table[from_table].append((from_col, to_table, to_col))
+    
     lines = []
-    for table_name, columns in tables_dict.items():
+    for table_name in sorted(tables_dict.keys()):
         lines.append(f"TABLE {table_name}:")
-        for col in columns:
-            lines.append(f"- {table_name}.{col}")
+        for col in tables_dict[table_name]:
+            col_line = f"- {table_name}.{col}"
+            
+            # Add FK annotation if this column is a foreign key
+            if table_name in fk_from_table:
+                for fk_col, ref_table, ref_col in fk_from_table[table_name]:
+                    if fk_col == col:
+                        col_line += f" (references {ref_table}.{ref_col})"
+                        break
+            
+            lines.append(col_line)
         lines.append("")
     
-    return "\n".join(lines), (foreign_keys or [])
+    return "\n".join(lines), fk_list
 
 
 def parse_schema_metadata(schema_text: str) -> Tuple[Dict[str, set], Dict[str, List[str]]]:
     """
     Parse schema text into structured metadata.
+    Enhanced to handle FK annotations.
     
     Schema format (simple text):
         TABLE table_name:
         - table_name.column1
-        - table_name.column2
+        - table_name.column2 (references other_table.id)
         
         TABLE another_table:
         - another_table.column1
@@ -74,6 +94,11 @@ def parse_schema_metadata(schema_text: str) -> Tuple[Dict[str, set], Dict[str, L
 
         elif line.startswith("-") and current_table:
             col = line.replace("-", "").strip()
+            
+            # Remove FK annotation if present
+            if " (references " in col:
+                col = col.split(" (references ")[0]
+            
             if "." in col:
                 table, column = col.split(".", 1)
                 tables[table].add(column)

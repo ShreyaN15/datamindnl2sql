@@ -118,3 +118,37 @@ class NL2SQLDetailedResponse(BaseModel):
                 "was_corrected": True
             }
         }
+
+
+class VisualizationRequest(BaseModel):
+    """Request for data visualization analysis"""
+    query_result: List[Dict[str, Any]] = Field(..., description="Query result rows")
+    column_info: List[Dict[str, str]] = Field(..., description="Column metadata (name, type)")
+    sql_query: str = Field(..., description="The SQL query that generated these results")
+
+
+class VisualizationResponse(BaseModel):
+    """Response from visualization analysis"""
+    is_visualizable: bool = Field(..., description="Whether data can be visualized")
+    reason: str = Field(..., description="Explanation of visualization suitability")
+    recommended_chart: str = Field(..., description="Recommended chart type")
+    chart_config: Optional[Dict[str, Any]] = Field(None, description="Chart configuration")
+    data: Optional[Dict[str, Any]] = Field(None, description="Formatted data for charting")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "is_visualizable": True,
+                "reason": "Aggregated numeric data suitable for visualization",
+                "recommended_chart": "bar",
+                "chart_config": {
+                    "title": "Students by Department",
+                    "x_axis": "department_name",
+                    "y_axis": "count"
+                },
+                "data": {
+                    "labels": ["CS", "Math", "Physics"],
+                    "datasets": [{"label": "count", "data": [45, 32, 28]}]
+                }
+            }
+        }

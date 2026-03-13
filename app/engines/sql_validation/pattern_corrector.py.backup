@@ -79,11 +79,9 @@ class SQLPatternCorrector:
         
         # Apply corrections in order of priority
         sql = self._fix_text_corruption(sql)  # Fix tokenization errors (W JOIN, HERE instead of WHERE)
-        sql = self._fix_incomplete_group_by(sql, schema_tables)  # Fix incomplete "GROUP BY" with no column
         sql = self._normalize_string_quotes(sql)  # Normalize double quotes to single quotes for string literals
         sql = self._fix_nonexistent_columns(sql, schema_tables)  # Fix non-existent column names EARLY
         sql = self._fix_select_mismatch_with_question(sql, question, schema_tables)  # Fix SELECT clause when it doesn't match question intent
-        sql = self._fix_aggregation_instead_of_ordering(sql, question, schema_tables)  # Fix aggregation (AVG/SUM) when ORDER BY is needed
         sql = self._fix_table_name_as_column(sql, question, schema_tables, fk_map)  # Fix table name in SELECT
         sql = self._fix_select_from_wrong_table(sql, question, schema_tables, fk_map)  # Fix SELECT from wrong table
         sql = self._remove_incorrect_group_by(sql)  # Remove GROUP BY without aggregation FIRST
@@ -205,48 +203,12 @@ class SQLPatternCorrector:
         - "W JOIN" instead of "WHERE ... JOIN"
         - "HERE" appearing as separate word instead of part of WHERE
         - Split keywords due to tokenization
-        - Merged text like "department_idROUP BY" (should be "department_id GROUP BY")
-        - Standalone letters from split keywords like "students G JOIN"
         
         Examples:
         Wrong: SELECT * FROM table W JOIN other ON ...HERE condition = value
         Right: SELECT * FROM table JOIN other ON ... WHERE condition = value
-        
-        Wrong: SELECT COUNT(*) FROM students G JOIN departments ON id = idROUP BY name
-        Right: SELECT COUNT(*) FROM students JOIN departments ON id = id GROUP BY name
         """
         original_sql = sql
-        
-        # Protect valid keywords before fixing merged text (to avoid matching inside them)
-        # Protect GROUP BY
-        sql = re.sub(r'\bGROUP\s+BY\b', '__PROTECTED_GROUP_BY__', sql, flags=re.IGNORECASE)
-        # Protect ORDER BY
-        sql = re.sub(r'\bORDER\s+BY\b', '__PROTECTED_ORDER_BY__', sql, flags=re.IGNORECASE)
-        
-        # Fix merged text patterns (keyword fragments merged with previous word)
-        # Pattern: word+ROUP BY → word GROUP BY (e.g., "department_idROUP BY" → "department_id GROUP BY")
-        sql = re.sub(r'(\w)ROUP\s+BY\b', r'\1 GROUP BY', sql, flags=re.IGNORECASE)
-        
-        # Pattern: word+RDER BY → word ORDER BY (e.g., "columnORDER BY" → "column ORDER BY")
-        sql = re.sub(r'(\w)RDER\s+BY\b', r'\1 ORDER BY', sql, flags=re.IGNORECASE)
-        
-        # Restore protected keywords
-        sql = re.sub(r'__PROTECTED_GROUP_BY__', 'GROUP BY', sql)
-        sql = re.sub(r'__PROTECTED_ORDER_BY__', 'ORDER BY', sql)
-        
-        # Fix standalone single letters before keywords (from split keywords)
-        # Pattern: table G JOIN → table JOIN (G is fragment from GROUP)
-        sql = re.sub(r'\b(\w+)\s+G\s+JOIN\b', r'\1 JOIN', sql, flags=re.IGNORECASE)
-        
-        # Pattern: table O WHERE → table WHERE (O is fragment from ORDER or other keyword)
-        sql = re.sub(r'\b(\w+)\s+O\s+WHERE\b', r'\1 WHERE', sql, flags=re.IGNORECASE)
-        
-        # Fix duplicate keywords (resulting from split/merge issues)
-        # Pattern: GROUP BY GROUP BY → GROUP BY
-        sql = re.sub(r'\bGROUP\s+BY\s+GROUP\s+BY\b', 'GROUP BY', sql, flags=re.IGNORECASE)
-        
-        # Pattern: ORDER BY ORDER BY → ORDER BY
-        sql = re.sub(r'\bORDER\s+BY\s+ORDER\s+BY\b', 'ORDER BY', sql, flags=re.IGNORECASE)
         
         # Fix "W JOIN" - should be just "JOIN" (W is fragment of WHERE that got misplaced)
         sql = re.sub(r'\bW\s+JOIN\b', 'JOIN', sql, flags=re.IGNORECASE)
@@ -295,64 +257,6 @@ class SQLPatternCorrector:
         
         if sql != original_sql:
             logger.info(f"Fixed text corruption: '{original_sql}' → '{sql}'")
-        
-        return sql
-    
-    def _fix_incomplete_group_by(self, sql: str, schema_tables: dict) -> str:
-        """
-        Fix incomplete GROUP BY clause (GROUP BY with no column specified).
-        
-        This happens when ML model generates: SELECT COUNT(*), dept_name FROM table GROUP BY
-        Should be: SELECT COUNT(*), dept_name FROM table GROUP BY dept_name
-        
-        Strategy:
-        1. Detect "GROUP BY" followed by end of string or keyword (WHERE/ORDER/LIMIT/;)
-        2. Find non-aggregated columns in SELECT
-        3. Add those columns to GROUP BY
-        """
-        original_sql = sql
-        
-        # Check if GROUP BY exists and is incomplete
-        # Pattern: GROUP BY followed immediately by end/keyword (not a column name)
-        incomplete_group_by = re.search(r'GROUP\s+BY\s*(?:WHERE|ORDER|LIMIT|HAVING|;|$)', sql, re.IGNORECASE)
-        
-        if not incomplete_group_by:
-            return sql
-        
-        logger.info(f"Detected incomplete GROUP BY clause")
-        
-        # Extract SELECT clause
-        select_match = re.search(r'SELECT\s+(.*?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
-        if not select_match:
-            return sql
-        
-        select_clause = select_match.group(1)
-        
-        # Find non-aggregated columns  in SELECT
-        # Remove aggregation functions to find regular columns
-        select_without_agg = re.sub(r'(?:COUNT|SUM|AVG|MAX|MIN|DISTINCT)\s*\([^)]*\)', '', select_clause, flags=re.IGNORECASE)
-        
-        # Extract column references (table.column or just column)
-        columns = re.findall(r'(\w+\.\w+|\w+)', select_without_agg)
-        
-        # Filter out SQL keywords and find actual columns
-        sql_keywords = {'as', 'from', 'where', 'select', 'join', 'on', 'and', 'or', 'not', 'in', 'like'}
-        group_by_columns = [col for col in columns if col.lower() not in sql_keywords and col.strip()]
-        
-        if not group_by_columns:
-            # No columns to group by - remove GROUP BY entirely
-            logger.info(f"No grouping columns found, removing GROUP BY")
-            sql = re.sub(r'\s+GROUP\s+BY\s*(?:WHERE|ORDER|LIMIT|HAVING|;|$)', r' \1', sql, flags=re.IGNORECASE)
-            return sql
-        
-        # Add columns to GROUP BY
-        group_by_clause = 'GROUP BY ' + ', '.join(group_by_columns)
-        
-        # Replace incomplete GROUP BY with complete one
-        sql = re.sub(r'GROUP\s+BY\s*(?=(WHERE|ORDER|LIMIT|HAVING|;|$))', group_by_clause + ' ', sql, flags=re.IGNORECASE)
-        
-        if sql != original_sql:
-            logger.info(f"Fixed incomplete GROUP BY: '{original_sql}' → '{sql}'")
         
         return sql
     
@@ -416,155 +320,6 @@ class SQLPatternCorrector:
             logger.info(f"Normalized string quotes: '{original_sql}' → '{sql}'")
         
         return sql
-    
-    def _fix_aggregation_instead_of_ordering(self, sql: str, question: str, schema_tables: dict) -> str:
-        """
-        Fix queries that incorrectly use aggregation (AVG, SUM, COUNT, MIN, MAX) when they should use ORDER BY + LIMIT.
-        
-        This handles "top N", "bottom N", "highest", "lowest", "best", "worst" type queries.
-        
-        Example:
-        Question: "Top 5 students by GPA"
-        Wrong: SELECT AVG(gpa) FROM students
-        Fixed: SELECT first_name, last_name, gpa FROM students ORDER BY gpa DESC LIMIT 5
-        """
-        original_sql = sql
-        question_lower = question.lower()
-        sql_upper = sql.upper()
-        
-        # Detect ranking/ordering patterns in the question
-        ranking_patterns = [
-            (r'\btop\s+(\d+)?', 'DESC'),  # "top 5" or "top"
-            (r'\bbottom\s+(\d+)?', 'ASC'),  # "bottom 3" or "bottom"
-            (r'\bhighest\s+(\d+)?', 'DESC'),  # "highest" or "highest 10"
-            (r'\blowest\s+(\d+)?', 'ASC'),  # "lowest" or "lowest 5"
-            (r'\bbest\s+(\d+)?', 'DESC'),  # "best" or "best 3"
-            (r'\bworst\s+(\d+)?', 'ASC'),  # "worst" or "worst 2"
-        ]
-        
-        limit_value = None
-        order_direction = None
-        
-        for pattern, direction in ranking_patterns:
-            match = re.search(pattern, question_lower)
-            if match:
-                order_direction = direction
-                # Extract N value if present
-                if match.groups():
-                    try:
-                        limit_value = int(match.group(1)) if match.group(1) else 1
-                    except (ValueError, TypeError):
-                        limit_value = 1
-                else:
-                    limit_value = 1
-                break
-        
-        # If no ranking pattern found, return original SQL
-        if not order_direction:
-            return sql
-        
-        # Check if SQL uses aggregation without GROUP BY (indicates incorrect aggregation)
-        has_aggregation = bool(re.search(r'\b(AVG|SUM|COUNT|MIN|MAX)\s*\(', sql_upper))
-        has_group_by = bool(re.search(r'\bGROUP\s+BY\b', sql_upper))
-        
-        # If no aggregation or has GROUP BY (legitimate use), return original
-        if not has_aggregation or has_group_by:
-            return sql
-        
-        # Extract FROM table
-        from_match = re.search(r'FROM\s+(\w+)', sql, re.IGNORECASE)
-        if not from_match:
-            return sql
-        
-        from_table = from_match.group(1).lower()
-        
-        # Determine entity being queried
-        entity = None
-        if 'student' in question_lower:
-            entity = 'students'
-        elif 'professor' in question_lower or 'teacher' in question_lower or 'instructor' in question_lower:
-            entity = 'professors'
-        elif 'course' in question_lower or 'class' in question_lower:
-            entity = 'courses'
-        elif 'department' in question_lower:
-            entity = 'departments'
-        elif 'grade' in question_lower or 'score' in question_lower:
-            entity = 'grades'
-        elif 'enrollment' in question_lower:
-            entity = 'enrollments'
-        
-        # If entity not detected, try using the FROM table
-        if not entity:
-            entity = from_table
-        
-        # Determine attribute to order by from question
-        # Look for "by <attribute>" pattern
-        by_attribute = None
-        by_match = re.search(r'\bby\s+(\w+(?:\s+\w+)?)', question_lower)
-        if by_match:
-            attr_phrase = by_match.group(1).strip()
-            # Map common phrases to column names
-            attr_mappings = {
-                'gpa': 'gpa',
-                'grade': 'grade_value',
-                'score': 'grade_value',
-                'salary': 'salary',
-                'age': 'age',
-                'enrollment': 'enrollment_count',
-                'students': 'student_count',
-                'name': 'last_name',
-            }
-            by_attribute = attr_mappings.get(attr_phrase, attr_phrase)
-        
-        # If no "by" attribute found, try to extract from SELECT aggregation
-        if not by_attribute:
-            agg_match = re.search(r'(AVG|SUM|COUNT|MIN|MAX)\s*\(\s*(\w+)\s*\)', sql, re.IGNORECASE)
-            if agg_match:
-                by_attribute = agg_match.group(2)
-        
-        # If still no attribute, return original
-        if not by_attribute:
-            return sql
-        
-        # Build proper SELECT clause based on entity
-        select_cols = []
-        
-        # Add identifier columns
-        if entity in ['students', 'professors']:
-            select_cols.extend(['first_name', 'last_name'])
-        elif entity == 'courses':
-            select_cols.append('course_name')
-        elif entity == 'departments':
-            select_cols.append('department_name')
-        elif entity == 'grades':
-            select_cols.append('grade_id')
-        elif entity == 'enrollments':
-            select_cols.append('enrollment_id')
-        
-        # Add the ordering attribute if not already included
-        if by_attribute and by_attribute not in select_cols:
-            select_cols.append(by_attribute)
-        
-        # Build new SQL
-        select_clause = ', '.join(select_cols)
-        new_sql = f"SELECT {select_clause} FROM {entity} ORDER BY {by_attribute} {order_direction}"
-        
-        if limit_value:
-            new_sql += f" LIMIT {limit_value}"
-        
-        # Preserve WHERE clause if present
-        where_match = re.search(r'(WHERE\s+.+?)(?:\s+ORDER\s+BY|\s+GROUP\s+BY|\s+LIMIT|$)', sql, re.IGNORECASE)
-        if where_match:
-            where_clause = where_match.group(1).strip()
-            # Insert WHERE before ORDER BY
-            new_sql = f"SELECT {select_clause} FROM {entity} {where_clause} ORDER BY {by_attribute} {order_direction}"
-            if limit_value:
-                new_sql += f" LIMIT {limit_value}"
-        
-        if new_sql != original_sql:
-            logger.info(f"Fixed aggregation→ordering: '{original_sql}' → '{new_sql}'")
-        
-        return new_sql
     
     def _fix_table_name_as_column(self, sql: str, question: str, schema_tables: dict, fk_map: dict) -> str:
         """
@@ -836,57 +591,6 @@ class SQLPatternCorrector:
                 new_sql += f" WHERE {new_where}"
             
             logger.info(f"Fixed SELECT from wrong table:\n  Original: {sql}\n  Fixed: {new_sql}")
-            return new_sql
-        
-        # No direct FK found - try multi-hop join path
-        join_path = self._find_join_path(correct_table, from_table, fk_map, set())
-        if join_path:
-            logger.info(f"Using multi-hop join path from {correct_table} to {from_table}")
-            
-            # Build multi-hop JOIN query
-            # Use aliases: main table = first letter, intermediate tables = letters
-            alias_map = {correct_table: correct_table[0]}
-            current_alias = correct_table[0]
-            
-            # Build JOIN clauses
-            join_clauses = []
-            for i, step in enumerate(join_path):
-                intermediate_table = step['table']
-                # Create alias for intermediate table
-                if intermediate_table not in alias_map:
-                    alias_map[intermediate_table] = intermediate_table[0] if i == 0 else f"{intermediate_table[0]}{i}"
-                
-                intermediate_alias = alias_map[intermediate_table]
-                from_tbl = step['from_table']
-                from_alias = alias_map.get(from_tbl, from_tbl[0])
-                
-                # Build ON condition
-                join_clauses.append(
-                    f" JOIN {intermediate_table} {intermediate_alias} ON {from_alias}.{step['from_col']} = {intermediate_alias}.{step['to_col']}"
-                )
-            
-            # Build SELECT - add student names if selecting student_id
-            new_select_parts = []
-            if 'student_id' in select_cols and correct_table == 'students':
-                new_select_parts.extend(['first_name', 'last_name'])
-            else:
-                new_select_parts.extend(select_cols)
-            new_select = ', '.join(new_select_parts)
-            
-            # Fix WHERE clause - add table prefix for columns from the original FROM table
-            new_where = where_clause
-            if where_clause:
-                last_table_alias = alias_map[from_table]
-                for col in schema_tables.get(from_table, []):
-                    # Replace bare column with aliased version
-                    new_where = re.sub(rf'\b{col}\b', f'{last_table_alias}.{col}', new_where, flags=re.IGNORECASE)
-            
-            # Construct final query
-            new_sql = f"SELECT {new_select} FROM {correct_table} {current_alias}{''.join(join_clauses)}"
-            if new_where:
-                new_sql += f" WHERE {new_where}"
-            
-            logger.info(f"Fixed SELECT from wrong table with multi-hop JOIN:\n  Original: {sql}\n  Fixed: {new_sql}")
             return new_sql
         
         logger.warning(f"No FK relationship found between {correct_table} and {from_table}")
@@ -1315,31 +1019,12 @@ class SQLPatternCorrector:
             return sql
         
         # Inject JOIN after FROM clause (including optional alias)
-        # CRITICAL: Don't match 'G' from 'GROUP BY' as an alias
-        # An alias is only valid if it's NOT followed by 'ROUP' (completing GROUP)
-        
-        # Find the FROM clause and any valid alias
-        from_pattern = r'FROM\s+(\w+)(?:\s+([a-z])(?!ROUP\s+BY))?'
-        from_match = re.search(from_pattern, sql, re.IGNORECASE)
-        
-        if from_match:
-            from_table = from_match.group(1)
-            alias = from_match.group(2) if from_match.group(2) else ""
-            
-            # Build replacement: FROM table [alias] JOIN ...
-            replacement = f'FROM {from_table}'
-            if alias:
-                replacement += f' {alias}'
-            replacement += join_clause
-            
-            # Replace the FROM clause
-            sql = re.sub(
-                from_pattern,
-                replacement,
-                sql,
-                count=1,
-                flags=re.IGNORECASE
-            )
+        sql = re.sub(
+            r'(FROM\s+\w+(?:\s+[a-z])?)',
+            rf'\1{join_clause}',
+            sql,
+            flags=re.IGNORECASE
+        )
         
         return sql
     
@@ -2194,18 +1879,25 @@ class SQLPatternCorrector:
         4. Determine which entity table the name belongs to (students, professors)
         5. Rebuild query with proper JOINs and name filtering
         """
+        print(f"\n[DEBUG] _fix_person_name_in_wrong_column CALLED")
+        print(f"[DEBUG] SQL: {sql}")
+        print(f"[DEBUG] Question: {question}")
+        
         original_sql = sql
         
         # Pattern: WHERE column = 'Name' (single or multi-word)
         # Match both 'John Smith' and 'john' or 'John'
         where_match = re.search(r"WHERE\s+(?:(\w+)\.)?(\w+)\s*=\s*'([^']+)'", sql, re.IGNORECASE)
+        print(f"[DEBUG] WHERE pattern match: {where_match}")
         if not where_match:
+            print(f"[DEBUG] No WHERE pattern match - returning original SQL")
             return sql
         
         table_alias = where_match.group(1)  # Could be None
         column_name = where_match.group(2).lower()
         value = where_match.group(3)  # e.g., "John Smith", "john", "Grace Hopper"
         
+        print(f"[DEBUG] table_alias={table_alias}, column_name={column_name}, value={value}")
         
         # Check if the column name suggests it shouldn't contain person names
         # course_name, department_name, building_name should not have person names
@@ -2218,6 +1910,7 @@ class SQLPatternCorrector:
         # FK columns should contain integers, not person names
         is_fk_with_name = column_name.endswith('_id')
         
+        print(f"[DEBUG] is_wrong_column={is_wrong_column}, is_fk_with_name={is_fk_with_name}")
         
         # Check if question context suggests this is a person filter
         person_patterns = [
@@ -2236,11 +1929,14 @@ class SQLPatternCorrector:
                 has_person_context = True
                 break
         
+        print(f"[DEBUG] has_person_context={has_person_context}")
         
         # Only proceed if: wrong column OR person context OR FK column with name-like value
         if not (is_wrong_column or has_person_context or is_fk_with_name):
+            print(f"[DEBUG] Neither wrong_column nor person_context nor FK with name - returning original SQL")
             return sql
         
+        print(f"[DEBUG] Proceeding with fix...")
         
         # Extract name from value
         value_lower = value.lower()
@@ -2248,10 +1944,12 @@ class SQLPatternCorrector:
         
         # Check if value looks like it could be a name (letters only, 1-3 words)
         if not (1 <= len(name_parts) <= 3):
+            print(f"[DEBUG] Name part count check failed - returning original SQL")
             return sql
         
         # Check that all parts are alphabetic (names don't have numbers)
         if not all(part.replace("'", "").isalpha() for part in name_parts):
+            print(f"[DEBUG] Name alphabetic check failed - returning original SQL")
             return sql
         
         logger.info(f"Detected possible person name '{value}' being compared to column '{column_name}'")
@@ -2264,17 +1962,23 @@ class SQLPatternCorrector:
         
         person_entity = None
         
+        print(f"[DEBUG _fix_person_name] Question: {question}")
         
         if re.search(r'\b(?:taught|instructed)\s+by\b', question, re.IGNORECASE):
             person_entity = 'professors'
+            print(f"[DEBUG _fix_person_name] Matched 'taught by' -> professors")
         elif re.search(r'\b(?:taken|enrolled|enroll)\s+(?:in\s+)?(?:by|in\s+which)', question, re.IGNORECASE):
             person_entity = 'students'
+            print(f"[DEBUG _fix_person_name] Matched 'taken/enrolled by' -> students")
         elif re.search(r'\b(?:is|are)\s+(?:enrolled|taking)', question, re.IGNORECASE):
             person_entity = 'students'
+            print(f"[DEBUG _fix_person_name] Matched 'is enrolled/taking' -> students")
         elif re.search(r'\bprofessor\b', question, re.IGNORECASE):
             person_entity = 'professors'
+            print(f"[DEBUG _fix_person_name] Matched 'professor' -> professors")
         elif re.search(r'\bstudent\b', question, re.IGNORECASE):
             person_entity = 'students'
+            print(f"[DEBUG _fix_person_name] Matched 'student' -> students")
         else:
             # Try to infer from the main table in SQL
             from_match = re.search(r'FROM\s+(\w+)', sql, re.IGNORECASE)
@@ -2289,12 +1993,17 @@ class SQLPatternCorrector:
                 elif from_table in ['grades', 'enrollments']:
                     person_entity = 'students'
         
+        print(f"[DEBUG _fix_person_name] person_entity after detection: {person_entity}")
+        print(f"[DEBUG] schema_tables keys: {list(schema_tables.keys())}")
         
         if not person_entity or person_entity not in schema_tables:
             logger.info(f"Could not determine person entity for '{value}'")
+            print(f"[DEBUG] person_entity check failed - returning original SQL")
+            print(f"[DEBUG] person_entity={person_entity}, in schema_tables={person_entity in schema_tables if person_entity else 'N/A'}")
             return sql
         
         logger.info(f"Identified person entity: {person_entity}")
+        print(f"[DEBUG] Identified person entity: {person_entity}")
         
         # Split the name into first and last
         # Handle single names (just first name) and multi-word names
@@ -2305,24 +2014,30 @@ class SQLPatternCorrector:
             first_name = name_parts[0]
             last_name = ' '.join(name_parts[1:])  # Handle multi-word last names
         
+        print(f"[DEBUG] first_name={first_name}, last_name={last_name}")
         
         # Rebuild the query
         # Find the main FROM table
         from_match = re.search(r'FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql, re.IGNORECASE)
         if not from_match:
+            print(f"[DEBUG] No FROM match - returning original SQL")
             return sql
         
+        print(f"[DEBUG] from_match: {from_match.groups()}")
         
         from_table = from_match.group(1).lower()
         
+        print(f"[DEBUG] from_table={from_table}")
         
         # Get the SELECT clause
         select_match = re.search(r'SELECT\s+(.+?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
         if not select_match:
+            print(f"[DEBUG] No SELECT match - returning original SQL")
             return sql
         
         select_cols = select_match.group(1).strip()
         
+        print(f"[DEBUG] select_cols={select_cols}")
         
         # Build WHERE clause for name filtering
         if last_name:
@@ -2333,52 +2048,70 @@ class SQLPatternCorrector:
             name_where = f"s.first_name = '{first_name}'"
             prof_name_where = f"p.first_name = '{first_name}'"
         
+        print(f"[DEBUG] Checking from_table: {from_table}")
         
         # Determine what needs to be selected based on FROM table
         if from_table == 'courses' or 'course' in select_cols.lower():
+            print(f"[DEBUG] Branch: courses")
             # Want course information, filtered by person
             if person_entity == 'students':
+                print(f"[DEBUG] Sub-branch: courses + students")
                 # Need: courses <- enrollments <- students
                 new_sql = f"SELECT c.course_name, c.course_code FROM students s JOIN enrollments e ON s.student_id = e.student_id JOIN courses c ON e.course_id = c.course_id WHERE {name_where}"
             elif person_entity == 'professors':
+                print(f"[DEBUG] Sub-branch: courses + professors")
                 # Need: courses <- professors
                 new_sql = f"SELECT c.course_name, c.course_code FROM professors p JOIN courses c ON p.professor_id = c.professor_id WHERE {prof_name_where}"
             else:
+                print(f"[DEBUG] courses branch - no matching person_entity")
                 return sql
         elif from_table in ['grades', 'enrollments']:
+            print(f"[DEBUG] Branch: grades/enrollments")
             # Want enrollment/grade information, filtered by student
             if person_entity == 'students':
                 if from_table == 'grades':
-                    # grades table - need to JOIN students via enrollments (grades → enrollment_id → enrollments → student_id → students)
-                    new_sql = f"SELECT g.* FROM students s JOIN enrollments e ON s.student_id = e.student_id JOIN grades g ON e.enrollment_id = g.enrollment_id WHERE {name_where}"
+                    # grades table - need to JOIN students via grades.student_id
+                    new_sql = f"SELECT g.* FROM students s JOIN grades g ON s.student_id = g.student_id WHERE {name_where}"
                 else:
                     # enrollments table
                     new_sql = f"SELECT e.* FROM students s JOIN enrollments e ON s.student_id = e.student_id WHERE {name_where}"
             else:
+                print(f"[DEBUG] grades/enrollments branch - person_entity is not students")
                 return sql
         elif from_table == 'students':
+            print(f"[DEBUG] Branch: students (from_table == 'students')")
+            print(f"[DEBUG] person_entity in students branch: {person_entity}")
             # Want student information, potentially filtered by professor
             if person_entity == 'professors':
+                print(f"[DEBUG] Sub-branch: students + professors (SHOULD BUILD 4-TABLE JOIN)")
                 # Need: students <- enrollments -> courses -> professors
                 # SELECT the same columns from students that were originally selected
                 # Properly alias all columns with 's.'
                 cols_list = [col.strip() for col in select_cols.split(',')]
                 aliased_cols = ', '.join([f"s.{col}" if '.' not in col else col for col in cols_list])
                 new_sql = f"SELECT DISTINCT {aliased_cols} FROM students s JOIN enrollments e ON s.student_id = e.student_id JOIN courses c ON e.course_id = c.course_id JOIN professors p ON c.professor_id = p.professor_id WHERE {prof_name_where}"
+                print(f"[DEBUG] new_sql constructed: {new_sql}")
             elif person_entity == 'students':
+                print(f"[DEBUG] Sub-branch: students + students")
                 # Filtering students by student name - just fix WHERE
                 new_sql = f"SELECT {select_cols} FROM students s WHERE {name_where}"
             else:
+                print(f"[DEBUG] students branch - no matching person_entity - returning")
                 return sql
         else:
             # Not a common pattern, skip
+            print(f"[DEBUG] else branch - not a common pattern")
             return sql
         
+        print(f"[DEBUG] About to set sql = new_sql")
+        print(f"[DEBUG] new_sql value: {new_sql}")
         sql = new_sql
+        print(f"[DEBUG] sql after assignment: {sql}")
         
         if sql != original_sql:
             logger.info(f"Fixed person name in wrong column:\n  Original: {original_sql}\n  Fixed: {sql}")
         
+        print(f"[DEBUG] _fix_person_name_in_wrong_column RETURNING: {sql}")
         return sql
     
     def _fix_fk_string_comparison(self, sql: str, schema_tables: dict, fk_map: dict) -> str:
@@ -2781,6 +2514,8 @@ class SQLPatternCorrector:
         3. Check if all columns exist in main table
         4. If yes, remove JOIN clauses
         """
+        print(f"\n[DEBUG] _remove_unnecessary_joins CALLED")
+        print(f"[DEBUG] Input SQL: {sql}")
         original_sql = sql
         
         # Only process if query has JOINs
@@ -2830,6 +2565,8 @@ class SQLPatternCorrector:
             alias = match.group(1)
             referenced_aliases.append(alias.lower())
         
+        print(f"[DEBUG] referenced_columns: {referenced_columns}")
+        print(f"[DEBUG] referenced_aliases (including .*):{referenced_aliases}")
         
         # IMPORTANT: Before checking if columns are in main table, first check if any
         # non-main-table aliases are referenced. If so, those JOINs ARE necessary.
@@ -2843,14 +2580,18 @@ class SQLPatternCorrector:
             join_alias = (match.group(2) if match.group(2) else match.group(1)).lower()
             join_aliases.add(join_alias)
         
+        print(f"[DEBUG] referenced_aliases: {referenced_aliases}")
+        print(f"[DEBUG] join_aliases: {join_aliases}")
         
         # Check if any referenced alias is from a JOIN table (not main table)
         uses_join_table_alias = any(alias in join_aliases for alias in referenced_aliases)
         
+        print(f"[DEBUG] uses_join_table_alias: {uses_join_table_alias}")
         
         if uses_join_table_alias:
             # JOINs ARE necessary because columns are explicitly referenced from JOIN tables
             logger.info(f"Query references columns from JOIN table aliases: {[a for a in referenced_aliases if a in join_aliases]}, keeping JOINs")
+            print(f"[DEBUG] Keeping JOINs - JOIN table aliases are referenced")
             return sql
         
         # Note: We only check explicitly qualified columns (alias.column)

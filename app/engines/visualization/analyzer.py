@@ -136,7 +136,8 @@ class VisualizationAnalyzer:
             # Classify column
             is_numeric = self._is_numeric_column(col_type, sample_values)
             is_date = self._is_date_column(col_type, sample_values)
-            is_categorical = self._is_categorical_column(sample_values, len(query_result))
+            # Numeric columns should NOT be categorical (mutually exclusive)
+            is_categorical = False if is_numeric else self._is_categorical_column(sample_values, len(query_result))
             
             classifications[col_name] = {
                 'type': col_type,

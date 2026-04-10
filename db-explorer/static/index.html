@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DB Explorer (demo)</title>
+  <style>
+    :root {
+      --indigo: #4f46e5;
+      --indigo-hover: #4338ca;
+      --bg: #f8fafc;
+      --card: #fff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+    header span.sub {
+      color: var(--muted);
+      font-size: 0.875rem;
+      font-weight: 400;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 320px) 1fr;
+      min-height: calc(100vh - 57px);
+    }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      padding: 1.25rem;
+      overflow: auto;
+    }
+    @media (max-width: 900px) {
+      .panel { border-right: none; border-bottom: 1px solid var(--border); }
+    }
+    .main {
+      padding: 1.25rem 1.5rem;
+      overflow: auto;
+    }
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: #334155;
+      margin-bottom: 0.35rem;
+    }
+    input, select {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--indigo);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.2);
+    }
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+    .field { margin-bottom: 0.75rem; }
+    .hidden-host { display: none; }
+    button.primary {
+      background: var(--indigo);
+      color: #fff;
+      border: none;
+      padding: 0.6rem 1.25rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      font-size: 0.875rem;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 0.5rem;
+    }
+    button.primary:hover:not(:disabled) { background: var(--indigo-hover); }
+    button.primary:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      padding: 0.35rem 0.65rem;
+      border-radius: 0.375rem;
+      font-size: 0.8125rem;
+      cursor: pointer;
+    }
+    button.ghost:hover { background: #f1f5f9; }
+    .alert {
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin-bottom: 1rem;
+    }
+    .alert.err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .alert.ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+    .sidebar-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin: 0 0 0.75rem;
+      font-weight: 600;
+    }
+    .table-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.55rem 0.65rem;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      border: 1px solid transparent;
+    }
+    .table-item:hover { background: #f1f5f9; }
+    .table-item.active {
+      background: #eef2ff;
+      border-color: #c7d2fe;
+      color: var(--indigo);
+      font-weight: 600;
+    }
+    .badge {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      background: #e2e8f0;
+      color: #475569;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .table-item.active .badge { background: #c7d2fe; color: #3730a3; }
+    .db-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      padding: 0.6rem 0.65rem;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      border: 1px solid var(--border);
+      background: #fafafa;
+      margin-bottom: 0.5rem;
+    }
+    .db-item:hover { background: #f1f5f9; }
+    .db-item.active {
+      background: #eef2ff;
+      border-color: #c7d2fe;
+      box-shadow: 0 0 0 1px #c7d2fe;
+    }
+    .db-item-main { flex: 1; min-width: 0; }
+    .db-item-name { font-weight: 600; color: var(--text); }
+    .db-item-meta { font-size: 0.75rem; color: var(--muted); margin-top: 0.2rem; }
+    .db-item-remove {
+      flex-shrink: 0;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0.15rem 0.35rem;
+      border-radius: 0.25rem;
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .db-item-remove:hover { background: #fee2e2; color: #b91c1c; }
+    .viewer-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .viewer-head h2 { margin: 0; font-size: 1.125rem; }
+    .search {
+      min-width: 200px;
+      flex: 1;
+      max-width: 360px;
+    }
+    .search input { margin: 0; }
+    .hint { color: var(--muted); font-size: 0.8125rem; margin: 0; }
+    .table-wrap {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      overflow: auto;
+      max-height: calc(100vh - 220px);
+    }
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8125rem;
+    }
+    table.data th, table.data td {
+      padding: 0.5rem 0.65rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    table.data th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+      font-weight: 600;
+      color: #334155;
+      z-index: 1;
+    }
+    table.data tr:hover td { background: #fafafa; }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 3rem 1rem;
+      font-size: 0.9375rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>DB Explorer <span class="sub">read-only demo</span></h1>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="panel">
+      <form id="conn-form">
+        <div id="form-error" class="alert err" style="display:none"></div>
+        <div class="grid2">
+          <div class="field">
+            <label for="name">Connection Name</label>
+            <input id="name" name="name" type="text" required placeholder="My database" />
+          </div>
+          <div class="field">
+            <label for="db_type">Database Type</label>
+            <select id="db_type" name="db_type">
+              <option value="postgresql">PostgreSQL</option>
+              <option value="mysql">MySQL</option>
+              <option value="sqlite">SQLite</option>
+              <option value="mssql">MS SQL Server</option>
+              <option value="oracle">Oracle</option>
+            </select>
+          </div>
+        </div>
+        <div id="host-fields">
+          <div class="grid2">
+            <div class="field">
+              <label for="host">Host</label>
+              <input id="host" name="host" type="text" value="localhost" />
+            </div>
+            <div class="field">
+              <label for="port">Port</label>
+              <input id="port" name="port" type="number" value="5432" />
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="database_name">Database Name</label>
+          <input id="database_name" name="database_name" type="text" required placeholder="db_name or path/to.db" />
+        </div>
+        <div id="creds-fields">
+          <div class="field">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" autocomplete="username" />
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" />
+          </div>
+        </div>
+        <button type="submit" class="primary" id="btn-connect">Add connection</button>
+      </form>
+
+      <div id="databases-section" style="display:none; margin-top:1.5rem;">
+        <p class="sidebar-title">Databases</p>
+        <p class="hint" style="margin:0 0 0.75rem;">Select a database to browse its tables.</p>
+        <div id="databases-list"></div>
+      </div>
+
+      <div id="tables-section" style="display:none; margin-top:1.25rem;">
+        <p class="sidebar-title">Tables</p>
+        <div id="tables-list"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div id="viewer-empty" class="empty">
+        Add a connection, pick a database in the sidebar, then open a table.
+      </div>
+      <div id="viewer" style="display:none;">
+        <div class="viewer-head">
+          <div>
+            <h2 id="viewer-title">—</h2>
+            <p class="hint">Showing up to 100 rows. Filter is client-side only.</p>
+          </div>
+          <div class="search">
+            <label for="row-filter" style="margin-bottom:0.25rem;">Filter rows</label>
+            <input id="row-filter" type="search" placeholder="Type to filter visible rows…" autocomplete="off" />
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="data-table">
+            <thead id="data-thead"></thead>
+            <tbody id="data-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const form = $('conn-form');
+    const dbType = $('db_type');
+    const hostFields = $('host-fields');
+    const credsFields = $('creds-fields');
+    const portInput = $('port');
+
+    const defaultPorts = { postgresql: 5432, mysql: 3306, sqlite: null, mssql: 1433, oracle: 1521 };
+
+    function syncDbTypeUI() {
+      const t = dbType.value;
+      const isSqlite = t === 'sqlite';
+      hostFields.classList.toggle('hidden-host', isSqlite);
+      credsFields.classList.toggle('hidden-host', isSqlite);
+      if (!isSqlite) {
+        const p = defaultPorts[t];
+        if (p != null) portInput.value = p;
+      }
+    }
+    dbType.addEventListener('change', syncDbTypeUI);
+    syncDbTypeUI();
+
+    let activeConnectionId = null;
+    let rawRows = [];
+    let columns = [];
+
+    function showFormError(msg) {
+      const el = $('form-error');
+      el.textContent = msg || '';
+      el.style.display = msg ? 'block' : 'none';
+    }
+
+    function formatApiError(detail) {
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail))
+        return detail.map((x) => (x && x.msg) || JSON.stringify(x)).join('; ');
+      return 'Request failed';
+    }
+
+    async function api(method, url, body) {
+      const opt = { method, headers: {} };
+      if (body != null) {
+        opt.headers['Content-Type'] = 'application/json';
+        opt.body = JSON.stringify(body);
+      }
+      const r = await fetch(url, opt);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(formatApiError(data.detail) || r.statusText || 'Request failed');
+      return data;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      showFormError('');
+      const btn = $('btn-connect');
+      btn.disabled = true;
+      const t = dbType.value;
+      const payload = {
+        name: $('name').value.trim(),
+        db_type: t,
+        database_name: $('database_name').value.trim(),
+        username: $('username').value,
+        password: $('password').value,
+      };
+      if (t !== 'sqlite') {
+        payload.host = $('host').value.trim() || 'localhost';
+        const p = parseInt($('port').value, 10);
+        payload.port = Number.isFinite(p) ? p : null;
+      } else {
+        payload.host = null;
+        payload.port = null;
+      }
+
+      try {
+        if (t === 'mssql' || t === 'oracle') {
+          showFormError('MS SQL and Oracle are not enabled in this demo build. Choose PostgreSQL, MySQL, or SQLite.');
+          return;
+        }
+        const created = await api('POST', '/api/connect', payload);
+        await refreshConnectionsList();
+        const el = document.querySelector(
+          '#databases-list [data-id="' + created.connection_id + '"]'
+        );
+        if (created.connection_id && el) selectConnection(created.connection_id, el);
+      } catch (err) {
+        showFormError(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    async function refreshConnectionsList() {
+      const res = await api('GET', '/api/connections');
+      const conns = res.connections || [];
+      const wrap = $('databases-section');
+      const list = $('databases-list');
+      if (!conns.length) {
+        wrap.style.display = 'none';
+        $('tables-section').style.display = 'none';
+        $('tables-list').innerHTML = '';
+        activeConnectionId = null;
+        return;
+      }
+      wrap.style.display = 'block';
+      list.innerHTML = '';
+      conns.forEach((c) => {
+        const row = document.createElement('div');
+        row.className = 'db-item';
+        row.dataset.id = c.id;
+        const main = document.createElement('div');
+        main.className = 'db-item-main';
+        const nm = document.createElement('div');
+        nm.className = 'db-item-name';
+        nm.textContent = c.name;
+        const meta = document.createElement('div');
+        meta.className = 'db-item-meta';
+        meta.textContent = `${(c.db_type || '').toUpperCase()} · ${c.database_name || ''} · ${c.table_count ?? 0} tables`;
+        main.appendChild(nm);
+        main.appendChild(meta);
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'db-item-remove';
+        rm.title = 'Remove connection';
+        rm.setAttribute('aria-label', 'Remove connection');
+        rm.textContent = '×';
+        rm.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          removeConnection(c.id);
+        });
+        row.appendChild(main);
+        row.appendChild(rm);
+        row.addEventListener('click', () => selectConnection(c.id, row));
+        list.appendChild(row);
+      });
+      if (activeConnectionId && !conns.some((x) => x.id === activeConnectionId)) {
+        activeConnectionId = null;
+        $('tables-section').style.display = 'none';
+        $('tables-list').innerHTML = '';
+      }
+      if (activeConnectionId) {
+        const el = list.querySelector('[data-id="' + activeConnectionId + '"]');
+        if (el) el.classList.add('active');
+        await loadTablesForActive();
+      }
+    }
+
+    async function selectConnection(id, el) {
+      activeConnectionId = id;
+      document.querySelectorAll('.db-item').forEach((n) => n.classList.remove('active'));
+      if (el) el.classList.add('active');
+      document.querySelectorAll('.table-item').forEach((n) => n.classList.remove('active'));
+      $('tables-section').style.display = 'block';
+      $('viewer-empty').style.display = 'block';
+      $('viewer').style.display = 'none';
+      rawRows = [];
+      columns = [];
+      $('row-filter').value = '';
+      await loadTablesForActive();
+    }
+
+    async function removeConnection(id) {
+      try {
+        await api('DELETE', `/api/connections/${id}`);
+      } catch (_) {}
+      if (activeConnectionId === id) {
+        activeConnectionId = null;
+        $('tables-section').style.display = 'none';
+        $('tables-list').innerHTML = '';
+        $('viewer').style.display = 'none';
+        $('viewer-empty').style.display = 'block';
+      }
+      await refreshConnectionsList();
+      if (!activeConnectionId) {
+        const first = document.querySelector('#databases-list .db-item');
+        if (first && first.dataset.id) selectConnection(first.dataset.id, first);
+      }
+    }
+
+    async function loadTablesForActive() {
+      if (!activeConnectionId) return;
+      const res = await api('GET', `/api/connections/${activeConnectionId}/tables`);
+      const list = $('tables-list');
+      list.innerHTML = '';
+      (res.tables || []).forEach((t) => {
+        const row = document.createElement('div');
+        row.className = 'table-item';
+        row.dataset.name = t.name;
+        const left = document.createElement('span');
+        left.textContent = t.name;
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = t.row_count != null ? String(t.row_count) : '—';
+        row.appendChild(left);
+        row.appendChild(badge);
+        row.addEventListener('click', () => selectTable(t.name, row));
+        list.appendChild(row);
+      });
+    }
+
+    function selectTable(name, el) {
+      document.querySelectorAll('.table-item').forEach((n) => n.classList.remove('active'));
+      el.classList.add('active');
+      loadPreview(name);
+    }
+
+    async function loadPreview(tableName) {
+      $('viewer-empty').style.display = 'none';
+      $('viewer').style.display = 'block';
+      $('viewer-title').textContent = tableName;
+      $('row-filter').value = '';
+      const thead = $('data-thead');
+      const tbody = $('data-tbody');
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+      try {
+        const res = await api(
+          'GET',
+          `/api/connections/${activeConnectionId}/tables/${encodeURIComponent(tableName)}/preview`
+        );
+        columns = res.columns || [];
+        rawRows = res.rows || [];
+        const trh = document.createElement('tr');
+        columns.forEach((c) => {
+          const th = document.createElement('th');
+          th.textContent = c;
+          trh.appendChild(th);
+        });
+        thead.appendChild(trh);
+        renderRows(rawRows);
+      } catch (err) {
+        $('viewer-title').textContent = tableName + ' (error)';
+        tbody.innerHTML = `<tr><td colspan="99" class="empty">${err.message}</td></tr>`;
+      }
+    }
+
+    function renderRows(rows) {
+      const tbody = $('data-tbody');
+      tbody.innerHTML = '';
+      rows.forEach((r) => {
+        const tr = document.createElement('tr');
+        columns.forEach((c) => {
+          const td = document.createElement('td');
+          const v = r[c];
+          td.textContent = v === null || v === undefined ? '' : String(v);
+          td.title = td.textContent;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      if (!rows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = Math.max(columns.length, 1);
+        td.className = 'empty';
+        td.textContent = 'No rows match the filter.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+    }
+
+    $('row-filter').addEventListener('input', () => {
+      const q = $('row-filter').value.trim().toLowerCase();
+      if (!q) {
+        renderRows(rawRows);
+        return;
+      }
+      const filtered = rawRows.filter((row) =>
+        columns.some((c) => String(row[c] ?? '').toLowerCase().includes(q))
+      );
+      renderRows(filtered);
+    });
+
+  </script>
+</body>
+</html>

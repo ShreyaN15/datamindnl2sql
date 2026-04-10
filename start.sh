@@ -7,7 +7,9 @@ set -e
 
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
+DB_EXPLORER_PORT=3001
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$PROJECT_ROOT/logs"
 
 # Colors for output
 RED='\033[0;31m'
@@ -42,7 +44,7 @@ command_exists() {
 }
 
 # Check prerequisites
-echo -e "${BLUE}[1/6] Checking prerequisites...${NC}"
+echo -e "${BLUE}[1/7] Checking prerequisites...${NC}"
 
 if ! command_exists python3; then
     echo -e "${RED}✗ Python 3 is not installed${NC}"
@@ -58,13 +60,14 @@ echo -e "${GREEN}✓ Prerequisites satisfied${NC}"
 echo ""
 
 # Kill existing processes on ports
-echo -e "${BLUE}[2/6] Checking ports...${NC}"
+echo -e "${BLUE}[2/7] Checking ports...${NC}"
 kill_port $BACKEND_PORT
 kill_port $FRONTEND_PORT
+kill_port $DB_EXPLORER_PORT
 echo ""
 
 # Activate virtual environment and start backend
-echo -e "${BLUE}[3/6] Starting Backend API...${NC}"
+echo -e "${BLUE}[3/7] Starting Backend API...${NC}"
 cd "$PROJECT_ROOT"
 
 if [ ! -d "venv" ]; then
@@ -95,7 +98,7 @@ fi
 echo ""
 
 # Start frontend
-echo -e "${BLUE}[4/6] Starting Frontend...${NC}"
+echo -e "${BLUE}[4/7] Starting Frontend...${NC}"
 cd "$PROJECT_ROOT/frontend"
 
 if [ ! -d "node_modules" ]; then
@@ -121,28 +124,68 @@ else
 fi
 echo ""
 
+# Start DB Explorer demo (standalone read-only UI under db-explorer/)
+echo -e "${BLUE}[5/7] Starting DB Explorer demo...${NC}"
+DBE_DIR="$PROJECT_ROOT/db-explorer"
+DBE_VENV="$DBE_DIR/.venv"
+if [ -d "$DBE_DIR" ]; then
+    if [ ! -d "$DBE_VENV" ]; then
+        echo -e "${YELLOW}⚠ DB Explorer venv not found, creating...${NC}"
+        python3 -m venv "$DBE_VENV"
+    fi
+    # shellcheck disable=SC1091
+    source "$DBE_VENV/bin/activate"
+    pip install -q -r "$DBE_DIR/requirements.txt"
+    cd "$DBE_DIR"
+    nohup "$DBE_VENV/bin/uvicorn" main:app --host 0.0.0.0 --port "$DB_EXPLORER_PORT" > "$PROJECT_ROOT/logs/db-explorer.log" 2>&1 &
+    DB_EXPLORER_PID=$!
+    sleep 1
+    if ps -p $DB_EXPLORER_PID > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ DB Explorer on http://localhost:$DB_EXPLORER_PORT (PID: $DB_EXPLORER_PID)${NC}"
+        echo $DB_EXPLORER_PID > "$PROJECT_ROOT/logs/db-explorer.pid"
+    else
+        echo -e "${YELLOW}⚠ DB Explorer failed to start. See logs/db-explorer.log${NC}"
+        DB_EXPLORER_PID=""
+    fi
+    cd "$PROJECT_ROOT"
+else
+    echo -e "${YELLOW}⚠ db-explorer/ not found, skipping demo${NC}"
+    DB_EXPLORER_PID=""
+    cd "$PROJECT_ROOT"
+fi
+echo ""
+
 # Save PIDs for later
 echo $BACKEND_PID > "$PROJECT_ROOT/logs/backend.pid"
 echo $FRONTEND_PID > "$PROJECT_ROOT/logs/frontend.pid"
 
 # Display status
-echo -e "${BLUE}[5/6] Services Status:${NC}"
+echo -e "${BLUE}[6/7] Services Status:${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "  Backend API:  ${GREEN}http://localhost:$BACKEND_PORT${NC}"
-echo -e "  API Docs:     ${GREEN}http://localhost:$BACKEND_PORT/docs${NC}"
-echo -e "  Frontend:     ${GREEN}http://localhost:$FRONTEND_PORT${NC}"
+echo -e "  Backend API:   ${GREEN}http://localhost:$BACKEND_PORT${NC}"
+echo -e "  API Docs:      ${GREEN}http://localhost:$BACKEND_PORT/docs${NC}"
+echo -e "  Frontend:      ${GREEN}http://localhost:$FRONTEND_PORT${NC}"
+if [ -n "$DB_EXPLORER_PID" ]; then
+    echo -e "  DB Explorer:   ${GREEN}http://localhost:$DB_EXPLORER_PORT${NC}"
+fi
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-echo -e "${BLUE}[6/6] Logs:${NC}"
-echo -e "  Backend:  ${YELLOW}tail -f logs/backend.log${NC}"
-echo -e "  Frontend: ${YELLOW}tail -f logs/frontend.log${NC}"
+echo -e "${BLUE}[7/7] Logs:${NC}"
+echo -e "  Backend:     ${YELLOW}tail -f logs/backend.log${NC}"
+echo -e "  Frontend:    ${YELLOW}tail -f logs/frontend.log${NC}"
+if [ -n "$DB_EXPLORER_PID" ]; then
+    echo -e "  DB Explorer: ${YELLOW}tail -f logs/db-explorer.log${NC}"
+fi
 echo ""
 
 echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║         DataMind is ready!             ║${NC}"
 echo -e "${GREEN}║                                        ║${NC}"
-echo -e "${GREEN}║  Open: http://localhost:3000          ║${NC}"
+echo -e "${GREEN}║  App:        http://localhost:3000    ║${NC}"
+if [ -n "$DB_EXPLORER_PID" ]; then
+    echo -e "${GREEN}║  DB Explorer: http://localhost:$DB_EXPLORER_PORT    ║${NC}"
+fi
 echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -170,6 +213,15 @@ cleanup() {
             echo -e "${GREEN}✓ Frontend stopped${NC}"
         fi
         rm "$PROJECT_ROOT/logs/frontend.pid"
+    fi
+
+    if [ -f "$PROJECT_ROOT/logs/db-explorer.pid" ]; then
+        DB_EXPLORER_PID=$(cat "$PROJECT_ROOT/logs/db-explorer.pid")
+        if ps -p $DB_EXPLORER_PID > /dev/null 2>&1; then
+            kill $DB_EXPLORER_PID 2>/dev/null || true
+            echo -e "${GREEN}✓ DB Explorer stopped${NC}"
+        fi
+        rm "$PROJECT_ROOT/logs/db-explorer.pid"
     fi
     
     echo -e "${GREEN}Goodbye!${NC}"

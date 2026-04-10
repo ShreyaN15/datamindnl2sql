@@ -9,8 +9,10 @@ This is a hybrid approach: ML generates initial SQL, then pattern-based rules
 refine it for correctness.
 """
 
+import os
 import re
-from typing import List, Tuple, Optional
+from collections import deque
+from typing import List, Tuple, Optional, Dict
 import logging
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,14 @@ class SQLPatternCorrector:
             (r'borrowing', r'book', 'books'),
         ]
     
+    def _corrector_step_debug_enabled(self) -> bool:
+        v = (os.environ.get("NL2SQL_DEBUG_CORRECTOR_STEPS") or "").strip().lower()
+        return v in ("1", "true", "yes", "on")
+
+    def _log_corrector_step(self, step_name: str, sql: str) -> None:
+        if self._corrector_step_debug_enabled():
+            logger.info("NL2SQL_CORRECTOR_STEP[%s]: %s", step_name, sql)
+
     def correct_sql(
         self,
         sql: str,
@@ -79,31 +89,71 @@ class SQLPatternCorrector:
         
         # Apply corrections in order of priority
         sql = self._fix_text_corruption(sql)  # Fix tokenization errors (W JOIN, HERE instead of WHERE)
+        self._log_corrector_step("fix_text_corruption", sql)
         sql = self._fix_incomplete_group_by(sql, schema_tables)  # Fix incomplete "GROUP BY" with no column
+        self._log_corrector_step("fix_incomplete_group_by", sql)
         sql = self._normalize_string_quotes(sql)  # Normalize double quotes to single quotes for string literals
+        self._log_corrector_step("normalize_string_quotes", sql)
         sql = self._fix_nonexistent_columns(sql, schema_tables)  # Fix non-existent column names EARLY
+        self._log_corrector_step("fix_nonexistent_columns", sql)
+        sql = self._fix_enrolled_students_hallucination(sql, question, schema_tables, fk_map)
+        self._log_corrector_step("fix_enrolled_students_hallucination", sql)
         sql = self._fix_select_mismatch_with_question(sql, question, schema_tables)  # Fix SELECT clause when it doesn't match question intent
+        self._log_corrector_step("fix_select_mismatch_with_question", sql)
         sql = self._fix_aggregation_instead_of_ordering(sql, question, schema_tables)  # Fix aggregation (AVG/SUM) when ORDER BY is needed
+        self._log_corrector_step("fix_aggregation_instead_of_ordering", sql)
         sql = self._fix_table_name_as_column(sql, question, schema_tables, fk_map)  # Fix table name in SELECT
+        self._log_corrector_step("fix_table_name_as_column", sql)
         sql = self._fix_select_from_wrong_table(sql, question, schema_tables, fk_map)  # Fix SELECT from wrong table
+        self._log_corrector_step("fix_select_from_wrong_table", sql)
         sql = self._remove_incorrect_group_by(sql)  # Remove GROUP BY without aggregation FIRST
+        self._log_corrector_step("remove_incorrect_group_by", sql)
         sql = self._fix_having_without_group_by(sql, question)  # Remove/convert invalid HAVING without GROUP BY
+        self._log_corrector_step("fix_having_without_group_by", sql)
         sql = self._fix_ambiguous_join_conditions(sql, schema_tables, fk_map)  # Fix ambiguous JOIN conditions (column = column)
+        self._log_corrector_step("fix_ambiguous_join_conditions", sql)
         sql = self._fix_incorrect_join_conditions(sql, schema_tables, fk_map)  # Fix wrong JOIN conditions
+        self._log_corrector_step("fix_incorrect_join_conditions", sql)
+        sql = self._rebuild_students_taught_by_professor_if_needed(
+            sql, question, schema_tables, fk_map
+        )
+        self._log_corrector_step("rebuild_students_taught_by_professor_if_needed", sql)
         sql = self._fix_missing_joins(sql, question, schema_tables, fk_map)
+        self._log_corrector_step("fix_missing_joins", sql)
+        sql = self._expand_select_for_joined_tables(sql, question, schema_tables)
+        self._log_corrector_step("expand_select_for_joined_tables", sql)
         sql = self._fix_where_clause_issues(sql, question, schema_tables, fk_map)  # Fix WHERE column mismatches
+        self._log_corrector_step("fix_where_clause_issues", sql)
         sql = self._fix_where_wrong_table(sql, schema_tables)  # Fix WHERE referencing wrong table
+        self._log_corrector_step("fix_where_wrong_table", sql)
         sql = self._fix_person_name_in_wrong_column(sql, question, schema_tables, fk_map)  # Fix person name compared to wrong column
+        self._log_corrector_step("fix_person_name_in_wrong_column", sql)
         sql = self._fix_fk_string_comparison(sql, schema_tables, fk_map)  # Fix FK compared to string literal
+        self._log_corrector_step("fix_fk_string_comparison", sql)
         sql = self._fix_where_missing_column(sql, schema_tables, fk_map)  # Fix WHERE with non-existent alias or column
+        self._log_corrector_step("fix_where_missing_column", sql)
         sql = self._fix_date_year_comparison(sql, schema_tables)  # Fix date column compared to year integer
+        self._log_corrector_step("fix_date_year_comparison", sql)
+        sql = self._fix_spurious_department_name_when_semester_intended(
+            sql, question, schema_tables
+        )
+        self._log_corrector_step("fix_spurious_department_name_when_semester_intended", sql)
         sql = self._add_missing_entity_filter(sql, question, schema_tables, fk_map)  # Add missing WHERE for entity filters
+        self._log_corrector_step("add_missing_entity_filter", sql)
         sql = self._add_missing_where_clause(sql, question, schema_tables)  # Add missing WHERE from question
+        self._log_corrector_step("add_missing_where_clause", sql)
+        sql = self._fix_count_by_dimension(sql, question, schema_tables)
+        self._log_corrector_step("fix_count_by_dimension", sql)
         sql = self._fix_missing_group_by(sql, question)
+        self._log_corrector_step("fix_missing_group_by", sql)
         sql = self._fix_aggregation_with_dimensions(sql, question, schema_tables, fk_map)
+        self._log_corrector_step("fix_aggregation_with_dimensions", sql)
         sql = self._fix_having_clauses(sql, question)
+        self._log_corrector_step("fix_having_clauses", sql)
         sql = self._fix_count_with_unnecessary_groupby(sql)
+        self._log_corrector_step("fix_count_with_unnecessary_groupby", sql)
         sql = self._remove_unnecessary_joins(sql, schema_tables)  # Remove unnecessary JOINs at the end
+        self._log_corrector_step("remove_unnecessary_joins", sql)
         
         if sql != original_sql:
             logger.info(f"Pattern correction applied:\n  Original: {original_sql}\n  Corrected: {sql}")
@@ -196,6 +246,213 @@ class SQLPatternCorrector:
                 'to_col': to_col
             })
         return fk_map
+
+    def _prefer_enrollment_bridge_students_courses(
+        self, start: str, goal: str, question_lower: str
+    ) -> bool:
+        """Prefer paths through enrollments for students↔courses when NL implies class-taking."""
+        pair = {start.lower(), goal.lower()}
+        if pair != {"students", "courses"}:
+            return False
+        signals = (
+            r"\benrolled\b",
+            r"\btaking\b",
+            r"\btaught\s+by\b",
+            r"\bstudent",
+            r"\bcourses?\b",
+        )
+        return any(re.search(p, question_lower) for p in signals)
+
+    def _bfs_join_path_steps(
+        self,
+        start_table: str,
+        goal_table: str,
+        fk_map: dict,
+        prefer_enrollment_students_courses: bool = False,
+    ) -> Optional[List[dict]]:
+        """
+        Shortest undirected join path using FK metadata only.
+        Each step: JOIN step['table'] ON step['from_table'].from_col = step['table'].to_col
+        """
+        start = start_table.lower()
+        goal = goal_table.lower()
+        if start == goal:
+            return []
+
+        parent: Dict[str, Tuple[Optional[str], Optional[dict]]] = {start: (None, None)}
+        q = deque([start])
+
+        while q:
+            cur = q.popleft()
+            if cur == goal:
+                steps: List[dict] = []
+                at = goal
+                while at != start:
+                    prev, step = parent[at]
+                    if prev is None:
+                        return None
+                    if step:
+                        steps.append(step)
+                    at = prev
+                return list(reversed(steps))
+
+            forward_edges: List[Tuple[str, dict]] = []
+            for fk in fk_map.get(cur, []):
+                nxt = fk["to_table"].lower()
+                forward_edges.append(
+                    (
+                        nxt,
+                        {
+                            "table": nxt,
+                            "from_table": cur,
+                            "from_col": fk["from_col"],
+                            "to_col": fk["to_col"],
+                        },
+                    )
+                )
+
+            incoming_edges: List[Tuple[str, dict]] = []
+            for from_t, fks in fk_map.items():
+                ft = from_t.lower()
+                for fk in fks:
+                    if fk["to_table"].lower() != cur:
+                        continue
+                    nxt = ft
+                    incoming_edges.append(
+                        (
+                            nxt,
+                            {
+                                "table": nxt,
+                                "from_table": cur,
+                                "from_col": fk["from_col"],
+                                "to_col": fk["to_col"],
+                            },
+                        )
+                    )
+
+            use_incoming_first = prefer_enrollment_students_courses and cur in (
+                "students",
+                "courses",
+            )
+            ordered = incoming_edges + forward_edges if use_incoming_first else forward_edges + incoming_edges
+
+            for nxt, step in ordered:
+                if nxt not in parent:
+                    parent[nxt] = (cur, step)
+                    q.append(nxt)
+        return None
+
+    def _parse_instructor_display_name_from_question(self, question: str) -> Optional[str]:
+        """Extract instructor name after taught by / professor / instructor."""
+        patterns = (
+            r"\btaught\s+by\s+([A-Za-z]+(?:\s+[A-Za-z]+)+)(?=\s*[?.!]|$)",
+            r"\btaught\s+by\s+([A-Za-z]+)(?=\s*[?.!]|$)",
+            r"\bprofessor\s+([A-Za-z]+(?:\s+[A-Za-z]+)+)\b",
+            r"\bprofessor\s+([A-Za-z]+)\b",
+            r"\binstructor\s+([A-Za-z]+(?:\s+[A-Za-z]+)+)\b",
+            r"\binstructor\s+([A-Za-z]+)\b",
+        )
+        for pat in patterns:
+            m = re.search(pat, question.strip(), re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+                if name.lower() not in ("the", "a", "an", "named", "called"):
+                    return name
+        return None
+
+    def _professor_where_clause_from_name(self, name: str) -> str:
+        """Build professors p WHERE clause; escape single quotes in literals."""
+        safe = name.replace("'", "''")
+        parts = safe.split()
+        if len(parts) >= 2:
+            return f"p.first_name = '{parts[0]}' AND p.last_name = '{' '.join(parts[1:])}'"
+        return f"p.last_name = '{parts[0]}'"
+
+    def _canonical_students_in_professor_courses_sql(self, where_prof: str) -> str:
+        return (
+            "SELECT s.first_name, s.last_name, c.course_name "
+            "FROM students s "
+            "JOIN enrollments e ON s.student_id = e.student_id "
+            "JOIN courses c ON e.course_id = c.course_id "
+            "JOIN professors p ON c.professor_id = p.professor_id "
+            f"WHERE {where_prof}"
+        )
+
+    def _rebuild_students_taught_by_professor_if_needed(
+        self,
+        sql: str,
+        question: str,
+        schema_tables: dict,
+        fk_map: dict,
+    ) -> str:
+        """
+        Replace broken student+professor join paths before generic JOIN injection.
+        Handles 'List students taking courses taught by Alan Turing' (no word 'professor').
+        """
+        ql = question.lower()
+        if not re.search(r"\bstudent", ql):
+            return sql
+        if not (
+            re.search(r"\btaught\s+by\b", ql)
+            or re.search(r"\b(?:professor|instructor)\b", ql)
+        ):
+            return sql
+        required = ("students", "enrollments", "courses", "professors")
+        if not all(t in schema_tables for t in required):
+            return sql
+        name = self._parse_instructor_display_name_from_question(question)
+        if not name:
+            return sql
+        low = sql.lower()
+        if "professors" in low and "enrollments" in low and re.search(
+            r"p\.\s*(?:first_name|last_name)\s*=", sql, re.IGNORECASE
+        ):
+            return sql
+        where_p = self._professor_where_clause_from_name(name)
+        fixed = self._canonical_students_in_professor_courses_sql(where_p)
+        logger.info("Rebuilt students + taught-by-professor query from NL intent")
+        return fixed
+
+    def _fix_enrolled_students_hallucination(
+        self,
+        sql: str,
+        question: str,
+        schema_tables: dict,
+        fk_map: dict,
+    ) -> str:
+        """Fix SELECT enrolled_students FROM courses ... for enrollment-by-code questions."""
+        if not re.search(r"\benrolled_students\b", sql, re.IGNORECASE):
+            return sql
+        ql = question.lower()
+        if not (
+            re.search(r"\bstudent", ql)
+            and (
+                re.search(r"\benrolled\b", ql)
+                or re.search(r"\benrollment\b", ql)
+                or re.search(r"\btaking\b", ql)
+            )
+        ):
+            return sql
+        required = ("students", "enrollments", "courses")
+        if not all(t in schema_tables for t in required):
+            return sql
+        m_q = re.search(
+            r"\b(?:course\s+code|code)\s+([A-Z]{2,6}\d{2,4})\b", question, re.IGNORECASE
+        )
+        m_sql = re.search(r"course_code\s*=\s*'([^']+)'", sql, re.IGNORECASE)
+        code = (m_q.group(1) if m_q else None) or (m_sql.group(1) if m_sql else None)
+        if not code:
+            return sql
+        code_esc = code.replace("'", "''")
+        fixed = (
+            "SELECT s.first_name, s.last_name "
+            "FROM students s "
+            "JOIN enrollments e ON s.student_id = e.student_id "
+            "JOIN courses c ON e.course_id = c.course_id "
+            f"WHERE c.course_code = '{code_esc}'"
+        )
+        logger.info("Fixed enrolled_students hallucination with enrollment join chain")
+        return fixed
     
     def _fix_text_corruption(self, sql: str) -> str:
         """
@@ -656,7 +913,9 @@ class SQLPatternCorrector:
             join_clause = f" JOIN {filter_table} {filter_table[0]} ON {target_table[0]}.{fk_rel['from_col']} = {filter_table[0]}.{fk_rel['to_col']}"
         else:
             # Try multi-hop path
-            join_path = self._find_join_path(target_table, filter_table, fk_map, set())
+            join_path = self._find_join_path(
+                target_table, filter_table, fk_map, set(), question.lower()
+            )
             
             if not join_path:
                 # No JOIN path found - just fix FROM table
@@ -732,9 +991,16 @@ class SQLPatternCorrector:
         
         # Extract column names from SELECT (handle aliases, functions, etc.)
         select_cols = []
-        for part in select_clause.split(','):
+        select_for_split = re.sub(
+            r'^\s*DISTINCT\s+',
+            '',
+            select_clause,
+            flags=re.IGNORECASE,
+        )
+        for part in select_for_split.split(','):
             # Remove table prefix if exists (T1.column → column)
             col = part.strip()
+            col = re.sub(r'^\s*DISTINCT\s+', '', col, flags=re.IGNORECASE)
             col = re.sub(r'^\w+\.', '', col)  # Remove alias prefix
             col = re.sub(r'\s+as\s+\w+', '', col, flags=re.IGNORECASE)  # Remove AS alias
             col = col.strip()
@@ -839,7 +1105,9 @@ class SQLPatternCorrector:
             return new_sql
         
         # No direct FK found - try multi-hop join path
-        join_path = self._find_join_path(correct_table, from_table, fk_map, set())
+        join_path = self._find_join_path(
+            correct_table, from_table, fk_map, set(), question.lower()
+        )
         if join_path:
             logger.info(f"Using multi-hop join path from {correct_table} to {from_table}")
             
@@ -1200,6 +1468,151 @@ class SQLPatternCorrector:
                     break
         
         return tables
+
+    def _build_alias_to_table_map(self, sql: str) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """
+        Map alias -> physical table for FROM and JOIN clauses.
+        Returns (alias_to_table, table_to_alias) using last alias if a table appears twice.
+        """
+        alias_to_table: Dict[str, str] = {}
+        table_to_alias: Dict[str, str] = {}
+        from_match = re.search(
+            r'FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+(?:WHERE|JOIN|ORDER|GROUP|LIMIT|$))',
+            sql,
+            re.IGNORECASE,
+        )
+        if from_match:
+            ft = from_match.group(1).lower()
+            fa = from_match.group(2).lower() if from_match.group(2) else ft
+            alias_to_table[fa] = ft
+            table_to_alias[ft] = fa
+        for match in re.finditer(
+            r'JOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+(?:ON|WHERE|JOIN|ORDER|GROUP|LIMIT|$))',
+            sql,
+            re.IGNORECASE,
+        ):
+            jt = match.group(1).lower()
+            ja = match.group(2).lower() if match.group(2) else jt
+            alias_to_table[ja] = jt
+            table_to_alias[jt] = ja
+        return alias_to_table, table_to_alias
+
+    def _question_mentions_schema_table(self, question_lower: str, table: str) -> bool:
+        tl = table.lower()
+        if tl in question_lower:
+            return True
+        if tl.endswith("s") and len(tl) > 1 and tl[:-1] in question_lower:
+            return True
+        if not tl.endswith("s") and f"{tl}s" in question_lower:
+            return True
+        return False
+
+    def _display_columns_for_table(self, columns: List[str]) -> List[str]:
+        """Pick human-facing columns from schema (no table-specific names)."""
+        cols_lower = [c.lower() for c in columns]
+        if "first_name" in cols_lower and "last_name" in cols_lower:
+            return ["first_name", "last_name"]
+        name_like = [
+            c
+            for c in columns
+            if "name" in c.lower()
+            and not c.lower().endswith("_id")
+            and c.lower() not in ("filename", "username")
+        ]
+        if name_like:
+            return [name_like[0].lower()] if len(name_like) == 1 else [c.lower() for c in name_like[:3]]
+        title_like = [c for c in columns if "title" in c.lower() and not c.lower().endswith("_id")]
+        if title_like:
+            return [title_like[0].lower()]
+        return []
+
+    def _select_lists_columns_for_table(
+        self,
+        select_clause: str,
+        table: str,
+        alias: str,
+        schema_columns: List[str],
+    ) -> bool:
+        """True if SELECT already projects at least one column from this table (via alias)."""
+        sc = [c.lower() for c in schema_columns]
+        for m in re.finditer(rf'\b{re.escape(alias)}\.(\w+)', select_clause, re.IGNORECASE):
+            col = m.group(1).lower()
+            if col in sc:
+                return True
+        return False
+
+    def _expand_select_for_joined_tables(
+        self, sql: str, question: str, schema_tables: dict
+    ) -> str:
+        """
+        When NL asks for names from multiple joined tables but SELECT only lists one side,
+        append display columns for missing tables using existing aliases (schema-driven).
+        """
+        if "JOIN" not in sql.upper():
+            return sql
+        qlow = question.lower()
+        if not re.search(r"\bnames?\b", qlow):
+            return sql
+        if not re.search(r"\bwith\b", qlow):
+            return sql
+
+        select_match = re.search(
+            r"\bSELECT\s+(DISTINCT\s+)?(.+?)\s+FROM\b",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not select_match:
+            return sql
+        select_clause = select_match.group(2).strip()
+        if re.search(r"(?<!\.)\*\b", select_clause):
+            return sql
+        if re.search(r"\b(COUNT|AVG|SUM|MAX|MIN)\s*\(", select_clause, re.IGNORECASE):
+            return sql
+
+        alias_to_table, table_to_alias = self._build_alias_to_table_map(sql)
+        joined_tables = set(alias_to_table.values())
+        if len(joined_tables) < 2:
+            return sql
+
+        mentioned = {
+            t.lower()
+            for t in schema_tables
+            if self._question_mentions_schema_table(qlow, t) and t.lower() in joined_tables
+        }
+        if len(mentioned) < 2:
+            return sql
+
+        additions: List[str] = []
+        for table in sorted(mentioned):
+            alias = table_to_alias.get(table)
+            if not alias:
+                continue
+            cols = schema_tables.get(table, [])
+            if not cols:
+                continue
+            if self._select_lists_columns_for_table(
+                select_clause, table, alias, cols
+            ):
+                continue
+            disp = self._display_columns_for_table(cols)
+            for c in disp:
+                qual = f"{alias}.{c}"
+                if qual.lower() not in sql.lower():
+                    additions.append(qual)
+
+        if not additions:
+            return sql
+
+        new_select = f"{select_clause}, {', '.join(additions)}"
+        sql = re.sub(
+            r"\bSELECT\s+.*?\s+FROM\b",
+            f"SELECT {new_select} FROM",
+            sql,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        logger.info("Expanded SELECT for joined tables: added %s", additions)
+        return sql
     
     def _inject_join_from_question(
         self,
@@ -1232,6 +1645,15 @@ class SQLPatternCorrector:
                     if singular in question:
                         target_table = table_lower
                         break
+        
+        if not target_table:
+            ql = question.lower()
+            for ent_pat, attr_pat, detail_table in self.entity_patterns:
+                if detail_table not in schema_tables:
+                    continue
+                if re.search(ent_pat, ql) and re.search(attr_pat, ql):
+                    target_table = detail_table
+                    break
         
         if not target_table:
             return sql
@@ -1304,7 +1726,10 @@ class SQLPatternCorrector:
                     joined_tables.add(target_table)
             else:
                 # Try multi-hop path (e.g., courses -> enrollments -> grades)
-                path = self._find_join_path(main_table, target_table, fk_map, joined_tables)
+                qlow = (question or "").lower()
+                path = self._find_join_path(
+                    main_table, target_table, fk_map, joined_tables, qlow
+                )
                 if path:
                     for step in path:
                         if step['table'] not in joined_tables:
@@ -1367,7 +1792,14 @@ class SQLPatternCorrector:
         
         return None
     
-    def _find_join_path(self, from_table: str, to_table: str, fk_map: dict, existing_joins: set) -> Optional[List[dict]]:
+    def _find_join_path(
+        self,
+        from_table: str,
+        to_table: str,
+        fk_map: dict,
+        existing_joins: set,
+        question_lower: str = "",
+    ) -> Optional[List[dict]]:
         """
         Find a multi-hop JOIN path between two tables.
         
@@ -1396,14 +1828,17 @@ class SQLPatternCorrector:
             ],
         }
         
-        # Check if we have a predefined path
+        # Prefer hand-tuned paths when present (same length semantics as historical behavior)
         key = (from_table.lower(), to_table.lower())
         if key in join_patterns:
             return join_patterns[key]
-        
-        # Try BFS to find path dynamically (for general case)
-        # For now, return None if no predefined path
-        return None
+
+        prefer = self._prefer_enrollment_bridge_students_courses(
+            from_table, to_table, question_lower
+        )
+        return self._bfs_join_path_steps(
+            from_table, to_table, fk_map, prefer_enrollment_students_courses=prefer
+        )
     
     def _inject_join_for_grouping(
         self,
@@ -1578,12 +2013,10 @@ class SQLPatternCorrector:
                     logger.info(f"Column '{column}' not found in table '{actual_table}'. Looking for correct table...")
                     
                     # Try to infer correct table and column from question and value
-                    # Pattern 1: "professor X" or "taught by X" in question with value matching name
-                    # Pattern 2: WHERE condition references a name but column doesn't exist
-                    needs_professor_filter = (
-                        re.search(r'\bprofessor\b', question, re.IGNORECASE) or
-                        re.search(r'\btaught\s+by\b', question, re.IGNORECASE) or
-                        (column_lower == 'course_name' and value and value[0].isupper())  # Hopper looks like a name
+                    # Require explicit instructor semantics (avoid rebuilding on stray Title Case literals)
+                    needs_professor_filter = bool(
+                        re.search(r'\b(?:professor|instructor)\b', question, re.IGNORECASE)
+                        or re.search(r'\btaught\s+by\b', question, re.IGNORECASE)
                     )
                     
                     if needs_professor_filter:
@@ -1671,7 +2104,9 @@ class SQLPatternCorrector:
         joined_tables = {main_table}
         
         # Find path from main_table to target_table
-        path = self._find_join_path(main_table, target_table, fk_map, joined_tables)
+        path = self._find_join_path(
+            main_table, target_table, fk_map, joined_tables, question.lower()
+        )
         if path:
             for step in path:
                 if step['table'] not in joined_tables:
@@ -1703,30 +2138,172 @@ class SQLPatternCorrector:
         
         Expected pattern: students → enrollments → courses → professors
         """
-        # Extract the SELECT clause
-        select_match = re.search(r'SELECT\s+(.*?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+        if not re.search(r"\bSELECT\b.+\bFROM\b", sql, re.IGNORECASE | re.DOTALL):
+            return sql
+
+        ql = question.lower()
+        instructor_intent = bool(
+            re.search(r"\b(?:professor|instructor)\b", ql)
+            or re.search(r"\btaught\s+by\b", ql)
+        )
+        if not instructor_intent:
+            return sql
+        # Only rewrite student-centric SQL; course-only queries use other correctors.
+        if "students" not in sql.lower():
+            return sql
+        required = ("students", "enrollments", "courses", "professors")
+        if not all(t in schema_tables for t in required):
+            return sql
+
+        name = self._parse_instructor_display_name_from_question(question)
+        if not name and professor_name:
+            name = professor_name.strip()
+        if not name:
+            return sql
+
+        where_p = self._professor_where_clause_from_name(name)
+        corrected = self._canonical_students_in_professor_courses_sql(where_p)
+        logger.info("Rebuilt query with professor filter: %s", corrected)
+        return corrected
+
+    def _resolve_dimension_phrase_to_column(
+        self, phrase: str, columns: List[str]
+    ) -> Optional[str]:
+        """Map NL fragment after 'by' (e.g. 'role title') to a column name from schema."""
+        if not phrase or not columns:
+            return None
+        stop = {
+            "the",
+            "a",
+            "an",
+            "each",
+            "every",
+            "for",
+            "to",
+            "of",
+            "in",
+            "by",
+            "and",
+            "or",
+        }
+        words = [
+            w.lower()
+            for w in phrase.split()
+            if w.lower() not in stop and re.match(r"^\w+$", w)
+        ]
+        if not words:
+            return None
+        col_lower_map = {c.lower(): c for c in columns}
+        snake = "_".join(words)
+        if snake in col_lower_map:
+            return col_lower_map[snake]
+        best = None
+        for c in columns:
+            cl = c.lower()
+            if all(w in cl for w in words):
+                if best is None or len(c) < len(best):
+                    best = c
+        return best
+
+    def _fix_count_by_dimension(
+        self, sql: str, question: str, schema_tables: dict
+    ) -> str:
+        """
+        NL asks to count by a dimension but SQL only selects the dimension with no COUNT/GROUP BY.
+        Example: Count members by role title -> SELECT role_title FROM members
+        """
+        qlow = question.lower().strip()
+        count_like = bool(
+            re.search(r"\bcount\b", qlow)
+            or re.search(r"\bhow\s+many\b", qlow)
+            or re.search(r"\bnumber\s+of\b", qlow)
+        )
+        if not count_like or " by " not in f" {qlow} ":
+            return sql
+
+        by_match = re.search(r"\bby\s+(.+)$", question.strip(), re.IGNORECASE)
+        if not by_match:
+            return sql
+        dim_phrase = by_match.group(1).strip().rstrip("?.!")
+        if not dim_phrase:
+            return sql
+
+        had_trailing_semicolon = bool(re.search(r";\s*$", sql))
+
+        sql_upper = sql.upper()
+        if "JOIN" in sql_upper or "GROUP BY" in sql_upper or "HAVING" in sql_upper:
+            return sql
+        if len(re.findall(r"\bFROM\b", sql_upper)) != 1:
+            return sql
+        if any(a in sql_upper for a in ("COUNT(", "AVG(", "SUM(", "MAX(", "MIN(")):
+            return sql
+
+        select_match = re.search(
+            r"\bSELECT\s+(.*?)\s+FROM\b", sql, re.IGNORECASE | re.DOTALL
+        )
         if not select_match:
             return sql
-        
-        select_clause = select_match.group(1)
-        
-        # Determine what we're selecting (students and courses)
-        # Build proper multi-hop JOIN
-        # Pattern 1: Query mentions students OR courses with professor filter
-        if ('students' in sql.lower() or 'courses' in sql.lower()) and 'professor' in question.lower():
-            # Query pattern: Show students (and courses) taught by professor X
-            # OR: List students enrolled in courses taught by professor X
-            corrected = (
-                f"SELECT s.first_name, s.last_name, c.course_name "
-                f"FROM students s "
-                f"JOIN enrollments e ON s.student_id = e.student_id "
-                f"JOIN courses c ON e.course_id = c.course_id "
-                f"JOIN professors p ON c.professor_id = p.professor_id "
-                f"WHERE p.last_name = '{professor_name}'"
-            )
-            logger.info(f"Rebuilt query with professor filter: {corrected}")
-            return corrected
-        
+        select_clause = select_match.group(1).strip()
+        if not select_clause or select_clause == "*" or re.match(
+            r"^\*\s*,", select_clause
+        ):
+            return sql
+        sel_parts = [p.strip() for p in select_clause.split(",")]
+        if len(sel_parts) != 1:
+            return sql
+        one_sel = sel_parts[0]
+        if re.search(r"\b(?:COUNT|AVG|SUM|MAX|MIN)\s*\(", one_sel, re.IGNORECASE):
+            return sql
+
+        from_match = re.search(
+            r"\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s*(?:WHERE\b|GROUP\s+BY|ORDER\s+BY|LIMIT\b|HAVING\b|;|\s*$))",
+            sql,
+            re.IGNORECASE,
+        )
+        if not from_match:
+            return sql
+        from_table = from_match.group(1).lower()
+        from_alias_sql = (
+            from_match.group(2) if from_match.group(2) else from_match.group(1)
+        )
+
+        if from_table not in schema_tables:
+            return sql
+        cols = schema_tables[from_table]
+        dim_col = self._resolve_dimension_phrase_to_column(dim_phrase, cols)
+        if not dim_col:
+            return sql
+
+        base_col = one_sel.split(".")[-1].strip().lower()
+        if base_col != dim_col.lower():
+            return sql
+
+        qual = f"{from_alias_sql}.{dim_col}"
+        new_select = f"{qual}, COUNT(*) AS cnt"
+        sql = re.sub(
+            r"\bSELECT\s+.*?\s+FROM\b",
+            f"SELECT {new_select} FROM",
+            sql,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        gb = f" GROUP BY {qual}"
+        om = re.search(r"\s+ORDER\s+BY\b", sql, re.IGNORECASE)
+        lm = re.search(r"\s+LIMIT\b", sql, re.IGNORECASE)
+        hm = re.search(r"\s+HAVING\b", sql, re.IGNORECASE)
+        if om:
+            sql = sql[: om.start()] + gb + sql[om.start() :]
+        elif lm:
+            sql = sql[: lm.start()] + gb + sql[lm.start() :]
+        elif hm:
+            sql = sql[: hm.start()] + gb + sql[hm.start() :]
+        else:
+            sql = sql.rstrip().rstrip(";") + gb
+            if had_trailing_semicolon:
+                sql += ";"
+
+        logger.info("Added COUNT(*) and GROUP BY for count-by-dimension: %s", qual)
         return sql
     
     def _fix_missing_group_by(self, sql: str, question: str) -> str:
@@ -2085,8 +2662,6 @@ class SQLPatternCorrector:
                             sql = sql[:select_start] + ' ' + new_select + ' ' + sql[from_pos:]
                         
                         logger.info(f"Fixed SELECT clause mismatch: '{select_clause}' → '{new_select}'")
-                        
-                        logger.info(f"Fixed SELECT clause mismatch: '{select_clause}' → '{new_select}'")
                         return sql
         
         return sql
@@ -2172,6 +2747,32 @@ class SQLPatternCorrector:
             logger.info(f"Fixed WHERE table references:\n  Original: {original_sql}\n  Fixed: {sql}")
         
         return sql
+
+    def _courses_filtered_by_student_phrasing(self, question: str) -> bool:
+        """
+        True when the NL ties courses to a student via enrollment-style phrasing.
+        Excludes 'offered/provided/run by' (usually department or instructor context).
+        """
+        q = question.lower()
+        if re.search(r'\boffered\s+by\b', q) or re.search(r'\bprovided\s+by\b', q) or re.search(r'\brun\s+by\b', q):
+            return False
+        return bool(
+            re.search(r'\bcourses?\s+.*\b(?:taken|enrolled)\s+by\b', question, re.IGNORECASE)
+            or re.search(r'\bcourses?\s+.*\bin\s+which\b', question, re.IGNORECASE)
+        )
+
+    def _question_uses_department_membership_phrasing(self, question: str) -> bool:
+        """
+        True when the question filters by department name (e.g. 'in Computer Science department'),
+        so multi-word literals like 'Computer Science' must not be treated as person first/last names.
+        """
+        if "department" not in question.lower():
+            return False
+        return bool(
+            re.search(r"\bin\s+(?:the\s+)?.+?\s+department\b", question, re.IGNORECASE)
+            or re.search(r"\bfrom\s+(?:the\s+)?.+?\s+department\b", question, re.IGNORECASE)
+            or re.search(r"\bof\s+(?:the\s+)?.+?\s+department\b", question, re.IGNORECASE)
+        )
     
     def _fix_person_name_in_wrong_column(self, sql: str, question: str, schema_tables: dict, fk_map: dict) -> str:
         """
@@ -2195,6 +2796,21 @@ class SQLPatternCorrector:
         5. Rebuild query with proper JOINs and name filtering
         """
         original_sql = sql
+
+        if self._question_uses_department_membership_phrasing(question):
+            person_anchor = bool(
+                re.search(r"\b(?:taught|instructed)\s+by\b", question, re.IGNORECASE)
+                or re.search(
+                    r"\b(?:taken|enrolled)\s+(?:in\s+)?(?:by|in\s+which)\b",
+                    question,
+                    re.IGNORECASE,
+                )
+                or re.search(r"\bby\s+(?:student|professor)\b", question, re.IGNORECASE)
+            )
+            if not person_anchor:
+                # e.g. "List student names in Computer Science department" — not a person literal;
+                # let FK / department helpers handle department_id / joins.
+                return sql
         
         # Pattern: WHERE column = 'Name' (single or multi-word)
         # Match both 'John Smith' and 'john' or 'John'
@@ -2205,12 +2821,23 @@ class SQLPatternCorrector:
         table_alias = where_match.group(1)  # Could be None
         column_name = where_match.group(2).lower()
         value = where_match.group(3)  # e.g., "John Smith", "john", "Grace Hopper"
-        
-        
+
+        if column_name == 'department_name':
+            return sql
+
+        # Already filtering on real person columns (e.g. p.first_name for professors)
+        if column_name in ("first_name", "last_name"):
+            return sql
+
+        # FK compared to a name-like string while question mentions department — handled by
+        # _fix_fk_string_comparison (runs after this step); avoid bogus s.first_name/s.last_name.
+        if column_name.endswith("_id") and re.search(r"\bdepartment\b", question, re.IGNORECASE):
+            return sql
+
         # Check if the column name suggests it shouldn't contain person names
-        # course_name, department_name, building_name should not have person names
+        # course_name, building_name should not have person names
         # Also, FK columns (ending with _id) should not have string person names
-        wrong_columns = ['course_name', 'department_name', 'building_name', 'building', 'semester']
+        wrong_columns = ['course_name', 'building_name', 'building', 'semester']
         
         is_wrong_column = column_name in wrong_columns
         
@@ -2282,9 +2909,9 @@ class SQLPatternCorrector:
                 from_table = from_match.group(1).lower()
                 # If selecting from courses, likely filtering by student or professor
                 if from_table == 'courses':
-                    # Check if question mentions "courses" with "by" or "in which"
-                    if re.search(r'\bcourses?\s+.*\s+(?:by|in\s+which)\b', question, re.IGNORECASE):
-                        person_entity = 'students'  # Default to students for "courses by X"
+                    # Require explicit student-centric phrasing — not "courses offered by [department]"
+                    if self._courses_filtered_by_student_phrasing(question):
+                        person_entity = 'students'
                 # If selecting from grades, likely filtering by student
                 elif from_table in ['grades', 'enrollments']:
                     person_entity = 'students'
@@ -2853,6 +3480,40 @@ class SQLPatternCorrector:
             logger.info(f"Query references columns from JOIN table aliases: {[a for a in referenced_aliases if a in join_aliases]}, keeping JOINs")
             return sql
         
+        # Unqualified column names that exist on a JOINed table but not on main table
+        # imply the JOIN is semantically required (e.g. SELECT first_name FROM courses c
+        # JOIN students s ... after a FROM-table rewrite).
+        join_table_names = []
+        for jm in re.finditer(
+            r'JOIN\s+(\w+)(?:\s+(?:AS\s+)?([A-Z0-9]+))?(?=\s+(?:ON|WHERE|JOIN|ORDER|GROUP|LIMIT|$))',
+            sql,
+            re.IGNORECASE,
+        ):
+            join_table_names.append(jm.group(1).lower())
+        only_on_join = set()
+        for jt in join_table_names:
+            for col in schema_tables.get(jt, []):
+                cl = col.lower()
+                if cl not in main_table_cols:
+                    only_on_join.add(cl)
+        sql_keywords = {
+            'as', 'and', 'or', 'not', 'null', 'true', 'false', 'case', 'when', 'then',
+            'else', 'end', 'distinct', 'from', 'join', 'inner', 'left', 'right', 'outer',
+            'on', 'where', 'group', 'by', 'having', 'order', 'limit', 'asc', 'desc',
+        }
+        for clause in (select_clause, where_clause):
+            for col in only_on_join:
+                if col in sql_keywords:
+                    continue
+                if re.search(rf'(?<![\w.])\b{re.escape(col)}\b', clause, re.IGNORECASE):
+                    logger.info(
+                        "Unqualified column %r appears in query but is not on main table %r; "
+                        "keeping JOINs",
+                        col,
+                        main_table,
+                    )
+                    return sql
+        
         # Note: We only check explicitly qualified columns (alias.column)
         # This avoids false matches with SQL keywords, table aliases, or values
         
@@ -2971,9 +3632,9 @@ class SQLPatternCorrector:
         if match:
             return match.group(1)
         
-        # Try pattern: table alias (without AS)
+        # Try pattern: table alias (without AS); alias may be last token before WHERE/end
         match = re.search(
-            rf'\b{re.escape(table_name)}\s+(\w+)\s+(?:ON|WHERE|JOIN|ORDER|GROUP|LIMIT|$)',
+            rf'\b{re.escape(table_name)}\s+(\w+)(?=\s+(?:ON|WHERE|JOIN|ORDER|GROUP|LIMIT)|\s*$)',
             sql,
             re.IGNORECASE
         )
@@ -3069,6 +3730,85 @@ class SQLPatternCorrector:
         
         return sql
     
+    def _fix_spurious_department_name_when_semester_intended(
+        self, sql: str, question: str, schema_tables: dict
+    ) -> str:
+        """
+        When NL names a term+year (e.g. Fall 2025) but SQL filters on department_name with a
+        literal that never appears in the question, replace that predicate with courses.semester.
+        Catches T5/enhancer leakage (e.g. Computer Science) on semester-only questions.
+        """
+        if 'courses' not in schema_tables:
+            return sql
+        course_cols = [c.lower() for c in schema_tables['courses']]
+        if 'semester' not in course_cols:
+            return sql
+        term_m = re.search(
+            r'\b(fall|spring|summer|winter)\s+(\d{4})\b', question, re.IGNORECASE
+        )
+        if not term_m:
+            return sql
+        sem_val = f"{term_m.group(1)} {term_m.group(2)}"
+        qlow = question.lower()
+
+        def lit_in_q(literal: str) -> bool:
+            s = literal.strip().lower()
+            return bool(s) and s in qlow
+
+        if 'WHERE' not in sql.upper():
+            return sql
+
+        cref = self._find_table_alias(sql, 'courses') or 'courses'
+        qual_dep = re.compile(
+            r'\b\w+\.department_name\s*=\s*\'([^\']*)\'',
+            re.IGNORECASE,
+        )
+        bare_dep = re.compile(
+            r'^department_name\s*=\s*\'([^\']*)\'$',
+            re.IGNORECASE,
+        )
+
+        wm = re.search(
+            r'\bWHERE\s+(.+?)(?=\s+ORDER\s+BY|\s+GROUP\s+BY|\s+LIMIT|\s+HAVING|;|\s*$)',
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not wm:
+            return sql
+
+        raw = wm.group(1).strip()
+        parts = re.split(r'\s+AND\s+', raw, flags=re.IGNORECASE)
+        new_parts: List[str] = []
+        dropped_spurious = False
+        for p in parts:
+            p_st = p.strip()
+            m_q = qual_dep.fullmatch(p_st)
+            if m_q and not lit_in_q(m_q.group(1)):
+                dropped_spurious = True
+                continue
+            m_b = bare_dep.match(p_st)
+            if m_b and not lit_in_q(m_b.group(1)):
+                dropped_spurious = True
+                continue
+            new_parts.append(p_st)
+
+        if not dropped_spurious:
+            return sql
+
+        logger.info(
+            "Spurious department_name literal (not in question); using semester=%r from NL",
+            sem_val,
+        )
+        sem_pred = f"{cref}.semester = '{sem_val}'"
+        if not any(
+            re.search(rf'\b{re.escape(cref)}\.semester\s*=', p, re.I) for p in new_parts
+        ):
+            new_parts.append(sem_pred)
+
+        new_where_body = ' AND '.join(new_parts)
+        start, end = wm.start(1), wm.end(1)
+        return sql[:start] + new_where_body + sql[end:]
+    
     def _add_missing_entity_filter(
         self,
         sql: str,
@@ -3108,6 +3848,33 @@ class SQLPatternCorrector:
             if table_lower in schema_tables:
                 for col in schema_tables[table_lower]:
                     available_columns[col] = table_lower
+        
+        # Pattern 0: "course code CS101" / "code CS101" with student enrollment wording
+        code_phrase = re.search(
+            r'\b(?:course\s+code|code)\s+([A-Z]{2,6}\d{2,4})\b',
+            question,
+            re.IGNORECASE,
+        )
+        if code_phrase and re.search(
+            r'\b(?:student|enrolled|enrollment)\b', question, re.IGNORECASE
+        ):
+            entity_value = code_phrase.group(1).strip()
+            if 'courses' not in [t.lower() for t in tables_in_query]:
+                sql = self._add_courses_join_if_needed(sql, schema_tables, fk_map)
+                tables_in_query = self._extract_tables_from_sql(sql, schema_tables)
+                available_columns = {}
+                for table in tables_in_query:
+                    tl = table.lower()
+                    if tl in schema_tables:
+                        for col in schema_tables[tl]:
+                            available_columns[col] = tl
+            if 'course_code' in available_columns:
+                alias = self._find_table_alias(sql, 'courses')
+                qualifier = f"{alias}." if alias else "courses."
+                where_clause = f" WHERE {qualifier}course_code = '{entity_value}'"
+                logger.info("Adding missing WHERE for course code phrase: %s", where_clause)
+                sql = sql + where_clause
+                return sql
         
         # Pattern 1: "enrolled in X" / "taking X" → filter by course
         enrolled_match = re.search(
@@ -3169,33 +3936,119 @@ class SQLPatternCorrector:
                 sql = sql + where_clause
                 return sql
         
+        # Pattern 3: "courses ... offered/provided/run by [Department]" (optional trailing "department")
+        if re.search(r'\bcourses?\b', question, re.IGNORECASE):
+            offered_match = re.search(
+                r'\b(?:offered|provided|run)\s+by\s+([A-Za-z]+(?:\s+[A-Za-z]+)*)\s+department\b',
+                question,
+                re.IGNORECASE,
+            )
+            if not offered_match:
+                offered_match = re.search(
+                    r'\b(?:offered|provided|run)\s+by\s+([A-Za-z]+(?:\s+[A-Za-z]+)*)\b',
+                    question,
+                    re.IGNORECASE,
+                )
+            if offered_match:
+                entity_value = offered_match.group(1).strip()
+                if entity_value and entity_value.lower() not in (
+                    'the',
+                    'a',
+                    'an',
+                    'each',
+                    'every',
+                    'all',
+                    'professor',
+                    'student',
+                    'instructor',
+                ):
+                    if 'department_name' not in available_columns:
+                        sql = self._add_departments_join_if_needed(sql, schema_tables, fk_map)
+                        tables_in_query = self._extract_tables_from_sql(sql, schema_tables)
+                        available_columns = {}
+                        for table in tables_in_query:
+                            tl = table.lower()
+                            if tl in schema_tables:
+                                for col in schema_tables[tl]:
+                                    available_columns[col] = tl
+                    if 'department_name' in available_columns:
+                        table_with_col = available_columns['department_name']
+                        alias = self._find_table_alias(sql, table_with_col)
+                        qualifier = f"{alias}." if alias else f"{table_with_col}."
+                        where_clause = f" WHERE {qualifier}department_name = '{entity_value}'"
+                        logger.info(
+                            "Adding missing WHERE clause for department (offered-by) filter: %s",
+                            where_clause,
+                        )
+                        sql = sql + where_clause
+                        return sql
+        
         return sql
     
     def _add_courses_join_if_needed(self, sql: str, schema_tables: dict, fk_map: dict) -> str:
-        """Helper to add JOIN to courses table if not already present."""
+        """Add JOIN to courses from enrollments using FK metadata when courses is missing."""
         tables_in_query = self._extract_tables_from_sql(sql, schema_tables)
+        lowered = [t.lower() for t in tables_in_query]
         
-        if 'courses' in [t.lower() for t in tables_in_query]:
+        if 'courses' in lowered:
             return sql
         
-        # Check if enrollments is in query (most common case)
-        if 'enrollments' in [t.lower() for t in tables_in_query]:
-            # Find alias for enrollments
-            e_alias = self._find_table_alias(sql, 'enrollments')
-            e_ref = e_alias if e_alias else 'enrollments'
-            
-            # Add JOIN to courses
-            # Find where to insert JOIN (before WHERE/ORDER/GROUP/LIMIT or at end)
-            insert_pos = len(sql)
-            for keyword in ['WHERE', 'ORDER', 'GROUP', 'LIMIT', 'HAVING']:
-                match = re.search(rf'\b{keyword}\b', sql, re.IGNORECASE)
-                if match:
-                    insert_pos = min(insert_pos, match.start())
-            
-            join_clause = f" JOIN courses c ON {e_ref}.course_id = c.course_id"
-            sql = sql[:insert_pos].rstrip() + join_clause + ' ' + sql[insert_pos:].lstrip()
-            logger.info(f"Added courses JOIN: {join_clause}")
+        if 'enrollments' not in lowered or 'courses' not in schema_tables:
+            return sql
         
+        fk_info = self._find_fk_relationship('enrollments', 'courses', fk_map)
+        if not fk_info:
+            return sql
+        
+        e_alias = self._find_table_alias(sql, 'enrollments')
+        e_ref = e_alias if e_alias else 'enrollments'
+        courses_alias = 'c'
+        ft = fk_info['from_table'].lower()
+        tt = fk_info['to_table'].lower()
+        if ft == 'enrollments' and tt == 'courses':
+            on_left = f"{e_ref}.{fk_info['from_col']}"
+            on_right = f"{courses_alias}.{fk_info['to_col']}"
+        elif ft == 'courses' and tt == 'enrollments':
+            on_left = f"{e_ref}.{fk_info['to_col']}"
+            on_right = f"{courses_alias}.{fk_info['from_col']}"
+        else:
+            return sql
+        
+        insert_pos = len(sql)
+        for keyword in ['WHERE', 'ORDER', 'GROUP', 'LIMIT', 'HAVING']:
+            match = re.search(rf'\b{keyword}\b', sql, re.IGNORECASE)
+            if match:
+                insert_pos = min(insert_pos, match.start())
+        
+        join_clause = f" JOIN courses {courses_alias} ON {on_left} = {on_right}"
+        sql = sql[:insert_pos].rstrip() + join_clause + ' ' + sql[insert_pos:].lstrip()
+        logger.info("Added courses JOIN (FK-driven): %s", join_clause)
+        
+        return sql
+
+    def _add_departments_join_if_needed(self, sql: str, schema_tables: dict, fk_map: dict) -> str:
+        """Add JOIN from courses to departments when schema + FK graph support it."""
+        tables_in_query = self._extract_tables_from_sql(sql, schema_tables)
+        lowered = [t.lower() for t in tables_in_query]
+        if 'departments' in lowered:
+            return sql
+        if 'courses' not in lowered or 'departments' not in schema_tables:
+            return sql
+        fk_info = self._find_fk_relationship('courses', 'departments', fk_map)
+        if not fk_info:
+            return sql
+        insert_pos = len(sql)
+        for keyword in ['WHERE', 'ORDER', 'GROUP', 'LIMIT', 'HAVING']:
+            match = re.search(rf'\b{keyword}\b', sql, re.IGNORECASE)
+            if match:
+                insert_pos = min(insert_pos, match.start())
+        courses_ref = self._find_table_alias(sql, 'courses') or 'courses'
+        dep_alias = 'd'
+        on_left = f"{courses_ref}.{fk_info['from_col']}"
+        on_right = f"{dep_alias}.{fk_info['to_col']}"
+        join_clause = f" JOIN departments {dep_alias} ON {on_left} = {on_right}"
+        sql = sql[:insert_pos].rstrip() + join_clause + ' ' + sql[insert_pos:].lstrip()
+        logger.info("Added departments JOIN: %s", join_clause)
         return sql
     
     def _add_missing_where_clause(self, sql: str, question: str, schema_tables: dict) -> str:

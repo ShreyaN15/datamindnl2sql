@@ -76,7 +76,39 @@ class QueryEnhancer:
                 'nl': 'Show student grades with student names',
                 'sql': 'SELECT s.first_name, s.last_name, g.assignment_name, g.score FROM students s JOIN enrollments e ON s.student_id = e.student_id JOIN grades g ON e.enrollment_id = g.enrollment_id',
                 'hint': 'Use enrollments to connect students with grades'
-            }
+            },
+            {
+                'keywords': ['courses', 'offered', 'department'],
+                'nl': 'List courses offered by the Computer Science department',
+                'sql': "SELECT c.course_name, c.course_code FROM courses c JOIN departments d ON c.department_id = d.department_id WHERE d.department_name = 'Computer Science'",
+                'hint': 'Join courses to departments on department_id; filter by department_name, not student names',
+                # Do not inject this literal-heavy example unless NL names a department or says "offered by"
+                # (avoids matching "courses" + "offered" in "offered in Fall 2025" alone).
+                'require_any_substrings': ['department'],
+                'require_any_regexes': [r'\boffered\s+by\b'],
+            },
+            {
+                'keywords': ['courses', 'offered'],
+                'nl': 'List all courses offered in Fall 2025',
+                'sql': "SELECT c.course_name, c.course_code FROM courses c WHERE c.semester = 'Fall 2025'",
+                'hint': 'When the question gives a term and year (e.g. Fall 2025), filter courses.semester; do not invent a department.',
+                'require_any_substrings': ['semester'],
+                'require_any_regexes': [
+                    r'\b(?:fall|spring|summer|winter)\s+\d{4}\b',
+                ],
+            },
+            {
+                'keywords': ['students', 'courses', 'taught'],
+                'nl': 'List students taking courses taught by Alan Turing',
+                'sql': "SELECT s.first_name, s.last_name, c.course_name FROM students s JOIN enrollments e ON s.student_id = e.student_id JOIN courses c ON e.course_id = c.course_id JOIN professors p ON c.professor_id = p.professor_id WHERE p.first_name = 'Alan' AND p.last_name = 'Turing'",
+                'hint': 'Students to courses go through enrollments; filter instructor on professors via courses.professor_id'
+            },
+            {
+                'keywords': ['students', 'enrolled', 'course', 'code'],
+                'nl': 'Show all students enrolled in course code CS101',
+                'sql': "SELECT s.first_name, s.last_name FROM students s JOIN enrollments e ON s.student_id = e.student_id JOIN courses c ON e.course_id = c.course_id WHERE c.course_code = 'CS101'",
+                'hint': 'Use enrollments to link students and courses; filter by course_code when the question gives a code'
+            },
         ]
         
         # JOIN trigger patterns - phrases that often require JOINs
@@ -91,6 +123,11 @@ class QueryEnhancer:
             r'\bstudents?\s+.*\bdepartment',
             r'\bcourses?\s+.*\bprofessor',
             r'\blist\s+\w+\s+with',
+            r'\boffered\s+by\b',
+            r'\bcourses?\b.*\bdepartment\b',
+            r'\bdepartment\b.*\bcourses?\b',
+            r'\bcourse\s+code\b',
+            r'\bstudents?\b.*\btaught\s+by\b',
         ]
         
         # Aggregation patterns
@@ -200,6 +237,10 @@ class QueryEnhancer:
             if re.search(pattern, question, re.IGNORECASE):
                 return True
         return False
+
+    def question_suggests_join(self, question: str) -> bool:
+        """Public hook for scoring / routing: NL likely needs JOINs."""
+        return self._likely_needs_join(question.lower())
     
     def _likely_needs_aggregation(self, question: str) -> bool:
         """Detect if question likely requires aggregation"""
@@ -237,12 +278,27 @@ class QueryEnhancer:
                     score += 1
             
             # Only add if at least 2 keywords match (ensures relevance)
-            if score >= 2:
+            if score >= 2 and self._example_meets_nl_gates(example, question):
                 scored_examples.append((score, example))
         
         # Sort by score (descending) and return top N
         scored_examples.sort(key=lambda x: x[0], reverse=True)
         return [ex for _, ex in scored_examples[:max_examples]]
+
+    def _example_meets_nl_gates(self, example: Dict, question: str) -> bool:
+        """
+        Optional per-example gates so literal-heavy SQL is not shown unless NL supports it.
+        If require_any_substrings or require_any_regexes is set, at least one must match.
+        """
+        subs = example.get('require_any_substrings') or []
+        regexes = example.get('require_any_regexes') or []
+        if not subs and not regexes:
+            return True
+        if any(s in question for s in subs):
+            return True
+        if any(re.search(rx, question, re.IGNORECASE) for rx in regexes):
+            return True
+        return False
     
     def _get_relevant_foreign_keys(
         self,

@@ -317,8 +317,9 @@ class NL2SQLService:
         
         # Apply SQL sanitizer to select best candidate
         best_sql = self._select_best_candidate(
-            candidates, 
-            schema_text, 
+            candidates,
+            question,
+            schema_text,
             foreign_keys or []
         )
         
@@ -343,22 +344,35 @@ class NL2SQLService:
         question: str,
         schema_text: str,
         foreign_keys: Optional[List[Tuple[str, str, str, str]]] = None,
-        use_sanitizer: bool = True
+        use_sanitizer: bool = True,
+        use_pattern_correction: bool = True,
     ) -> Dict:
         """
         Generate SQL with detailed validation information.
-        
+
+        This path uses a single beam-4 decode and the training-style prompt (no query
+        enhancer) unless you call ``generate_sql`` for production output. It therefore
+        does not match ``generate_sql`` for: enhancer few-shots, multi-candidate beam
+        selection, or T5 post-processing on all candidates—only the first decoded
+        string is validated.
+
+        When ``use_sanitizer`` is True and ``use_pattern_correction`` is True (default),
+        the same ``SQLPatternCorrector`` pass as ``generate_sql`` runs after the
+        validator so ``corrected_sql`` is closer to the default API pipeline.
+
         Args:
             question: Natural language question
             schema_text: Database schema in text format
             foreign_keys: List of foreign key relationships
             use_sanitizer: Whether to apply SQL validation
-        
+            use_pattern_correction: Whether to run pattern corrector after the validator
+                (no effect if ``use_sanitizer`` is False)
+
         Returns:
             Dictionary containing:
                 - question: Original question
                 - raw_sql: SQL from model before correction
-                - corrected_sql: SQL after sanitizer corrections
+                - corrected_sql: SQL after validator (and optional pattern corrector)
                 - is_valid: Whether the SQL is valid
                 - errors: List of errors/corrections applied
                 - was_corrected: Whether any corrections were made
@@ -400,19 +414,32 @@ class NL2SQLService:
         schema_tables, column_to_tables = parse_schema_metadata(schema_text)
         validator = SQLValidator(schema_tables, column_to_tables, foreign_keys or [])
         is_valid, corrected_sql, errors = validator.validate_and_fix(raw_sql)
+        err_list = list(errors)
+        
+        if use_pattern_correction:
+            before_pc = corrected_sql
+            corrected_sql = self.pattern_corrector.correct_sql(
+                corrected_sql,
+                question,
+                schema_text,
+                foreign_keys or [],
+            )
+            if corrected_sql != before_pc:
+                err_list.append("Pattern corrector adjusted SQL")
         
         return {
             'question': question,
             'raw_sql': raw_sql,
             'corrected_sql': corrected_sql,
             'is_valid': is_valid,
-            'errors': errors,
+            'errors': err_list,
             'was_corrected': raw_sql != corrected_sql
         }
     
     def _select_best_candidate(
         self,
         candidates: List[str],
+        question: str,
         schema_text: str,
         foreign_keys: List[Tuple[str, str, str, str]]
     ) -> str:
@@ -424,7 +451,7 @@ class NL2SQLService:
         -50 for each error
         -5 for each warning
         -1 for each position in beam
-        +10 for simpler queries (fewer JOINs)
+        +10 for simpler queries (fewer JOINs), softened when the question likely needs JOINs
         +5 for queries without subqueries
         """
         schema_tables, column_to_tables = parse_schema_metadata(schema_text)
@@ -432,6 +459,7 @@ class NL2SQLService:
         
         best_sql = candidates[0]
         best_score = -float('inf')
+        likely_join = self.query_enhancer.question_suggests_join(question)
         
         for i, candidate in enumerate(candidates):
             is_valid, corrected_sql, errors = validator.validate_and_fix(candidate)
@@ -440,10 +468,13 @@ class NL2SQLService:
             error_count = len([e for e in errors if e.startswith('ERROR:')])
             warning_count = len([e for e in errors if not e.startswith('ERROR:')])
             
-            # Simplicity bonuses
+            # Simplicity bonuses — do not strongly prefer zero-JOIN SQL when NL implies joins
             join_count = corrected_sql.upper().count('JOIN')
             subquery_count = corrected_sql.count('(SELECT')
-            simplicity_bonus = max(0, (3 - join_count) * 10) + max(0, (2 - subquery_count) * 5)
+            if likely_join:
+                simplicity_bonus = max(0, (5 - join_count) * 5) + max(0, (2 - subquery_count) * 5)
+            else:
+                simplicity_bonus = max(0, (3 - join_count) * 10) + max(0, (2 - subquery_count) * 5)
             
             score = (
                 (1000 if is_valid else 0) 

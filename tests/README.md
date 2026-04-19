@@ -24,6 +24,33 @@ This directory contains all test files and migration scripts for DataMind NL2SQL
 
 - `migrate_schema.py` - Database migration to add schema storage columns
 
+## Endpoint regression (library / employee / student)
+
+After code changes, run the **API-level** suite (creates a temp user, wires Postgres
+connections, runs `/query/execute-sql` smoke queries, then `/query/nl2sql` with
+`execute_query=true`). Pass/fail is based on **HTTP status** and
+**`execution_result.success`**, not on matching generated SQL text.
+
+```bash
+cd /path/to/datamindnl2sql
+source venv/bin/activate
+pip install -r requirements-e2e.txt   # once: adds httpx for TestClient
+python scripts/run_endpoint_regression_suite.py
+```
+
+Environment:
+
+| Variable | Purpose |
+|----------|---------|
+| `SKIP_PG=1` | Skip Postgres (only registers user; for CI smoke) |
+| `SKIP_NL2SQL=1` | After connections work, skip NL2SQL+model (execute-sql only) |
+| `PG_E2E_HOST` / `PG_E2E_PORT` / `PG_E2E_USER` / `PG_E2E_PASSWORD` | Postgres for `library_db`, `employee_db`, `student_db` |
+
+**Severity:** `required` cases must pass for exit code 0. `best_effort` (notably some
+`student_db` joins) log warnings only — see `STUDENT_DB_INFO.txt` for known model limits.
+
+Thin smoke (no Postgres): `python -m unittest tests.test_endpoint_regression_smoke`
+
 ## Running Tests
 
 ### Test Schema Inference (PostgreSQL - Recommended)

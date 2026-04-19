@@ -30,6 +30,13 @@ class NL2SQLRequest(BaseModel):
         True, 
         description="Whether to apply SQL validation and correction"
     )
+    use_pattern_correction: bool = Field(
+        True,
+        description=(
+            "When use_sanitizer is true, run the pattern corrector after the validator "
+            "(library fixes like authors/book counts require this to be true)"
+        ),
+    )
     return_details: bool = Field(
         False,
         description=(
@@ -87,6 +94,10 @@ class NL2SQLResponse(BaseModel):
     """Response from NL2SQL conversion"""
     sql: str = Field(..., description="Generated SQL query")
     question: str = Field(..., description="Original question")
+    model_suggestions: List[str] = Field(
+        default_factory=list,
+        description="Top raw SQL candidates from model before sanitizer/pattern correction"
+    )
     execution_result: Optional[QueryExecutionResult] = Field(
         None,
         description="Query execution results (if execute_query was True)"
@@ -97,9 +108,20 @@ class NL2SQLResponse(BaseModel):
             "example": {
                 "sql": "SELECT COUNT(*) FROM users WHERE country = 'USA'",
                 "question": "How many users are from USA?",
+                "model_suggestions": [
+                    "SELECT COUNT(*) FROM users WHERE Country = 'USA'",
+                    "SELECT COUNT(id) FROM users WHERE country = 'USA'",
+                    "SELECT COUNT(*) FROM users"
+                ],
                 "execution_result": None
             }
         }
+
+
+class SQLExecutionRequest(BaseModel):
+    """Request to execute a provided SQL query"""
+    sql: str = Field(..., description="SQL query to execute", min_length=1)
+    database_id: int = Field(..., description="Database connection ID")
 
 
 class NL2SQLDetailedResponse(BaseModel):

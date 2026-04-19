@@ -12,7 +12,7 @@ refine it for correctness.
 import os
 import re
 from collections import deque
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 import logging
 
 logger = logging.getLogger(__name__)
@@ -94,8 +94,12 @@ class SQLPatternCorrector:
         self._log_corrector_step("fix_incomplete_group_by", sql)
         sql = self._normalize_string_quotes(sql)  # Normalize double quotes to single quotes for string literals
         self._log_corrector_step("normalize_string_quotes", sql)
+        sql = self._fix_genre_literal_from_question(sql, question)
+        self._log_corrector_step("fix_genre_literal_from_question", sql)
         sql = self._fix_nonexistent_columns(sql, schema_tables)  # Fix non-existent column names EARLY
         self._log_corrector_step("fix_nonexistent_columns", sql)
+        sql = self._fix_invalid_group_by_columns(sql, question, schema_tables, fk_map)
+        self._log_corrector_step("fix_invalid_group_by_columns", sql)
         sql = self._fix_enrolled_students_hallucination(sql, question, schema_tables, fk_map)
         self._log_corrector_step("fix_enrolled_students_hallucination", sql)
         sql = self._fix_select_mismatch_with_question(sql, question, schema_tables)  # Fix SELECT clause when it doesn't match question intent
@@ -122,13 +126,17 @@ class SQLPatternCorrector:
         self._log_corrector_step("fix_missing_joins", sql)
         sql = self._expand_select_for_joined_tables(sql, question, schema_tables)
         self._log_corrector_step("expand_select_for_joined_tables", sql)
+        sql = self._qualify_ambiguous_select_columns(sql, schema_tables)
+        self._log_corrector_step("qualify_ambiguous_select_columns", sql)
+        sql = self._dedupe_select_columns(sql, schema_tables)
+        self._log_corrector_step("dedupe_select_columns", sql)
         sql = self._fix_where_clause_issues(sql, question, schema_tables, fk_map)  # Fix WHERE column mismatches
         self._log_corrector_step("fix_where_clause_issues", sql)
         sql = self._fix_where_wrong_table(sql, schema_tables)  # Fix WHERE referencing wrong table
         self._log_corrector_step("fix_where_wrong_table", sql)
         sql = self._fix_person_name_in_wrong_column(sql, question, schema_tables, fk_map)  # Fix person name compared to wrong column
         self._log_corrector_step("fix_person_name_in_wrong_column", sql)
-        sql = self._fix_fk_string_comparison(sql, schema_tables, fk_map)  # Fix FK compared to string literal
+        sql = self._fix_fk_string_comparison(sql, question, schema_tables, fk_map)  # Fix FK compared to string literal
         self._log_corrector_step("fix_fk_string_comparison", sql)
         sql = self._fix_where_missing_column(sql, schema_tables, fk_map)  # Fix WHERE with non-existent alias or column
         self._log_corrector_step("fix_where_missing_column", sql)
@@ -152,8 +160,19 @@ class SQLPatternCorrector:
         self._log_corrector_step("fix_having_clauses", sql)
         sql = self._fix_count_with_unnecessary_groupby(sql)
         self._log_corrector_step("fix_count_with_unnecessary_groupby", sql)
+        sql = self._fix_library_book_review_count_threshold(
+            sql, question, schema_tables, fk_map
+        )
+        self._log_corrector_step("fix_library_book_review_count_threshold", sql)
+        sql = self._fix_library_parent_book_count_threshold(
+            sql, question, schema_tables, fk_map
+        )
+        self._log_corrector_step("fix_library_parent_book_count_threshold", sql)
         sql = self._remove_unnecessary_joins(sql, schema_tables)  # Remove unnecessary JOINs at the end
         self._log_corrector_step("remove_unnecessary_joins", sql)
+        # Second pass: late steps string-build rarely; cheap insurance if merges reappear.
+        sql = self._fix_text_corruption(sql)
+        self._log_corrector_step("fix_text_corruption_final", sql)
         
         if sql != original_sql:
             logger.info(f"Pattern correction applied:\n  Original: {original_sql}\n  Corrected: {sql}")
@@ -235,17 +254,162 @@ class SQLPatternCorrector:
         return schema_tables
     
     def _build_fk_map(self, foreign_keys: List[Tuple[str, str, str, str]]) -> dict:
-        """Build a map of table relationships"""
-        fk_map = {}
+        """Build a map of table relationships (from_table keys lowercased for lookup)."""
+        fk_map: Dict[str, List[dict]] = {}
         for from_table, from_col, to_table, to_col in foreign_keys:
-            if from_table not in fk_map:
-                fk_map[from_table] = []
-            fk_map[from_table].append({
+            ft_key = from_table.lower()
+            if ft_key not in fk_map:
+                fk_map[ft_key] = []
+            fk_map[ft_key].append({
                 'from_col': from_col,
                 'to_table': to_table,
                 'to_col': to_col
             })
         return fk_map
+
+    def _library_books_table(self, schema_tables: dict) -> Optional[str]:
+        for name in ("books", "book"):
+            if name in schema_tables:
+                return name
+        return None
+
+    def _library_authors_table(self, schema_tables: dict) -> Optional[str]:
+        for name in ("authors", "author"):
+            if name in schema_tables:
+                return name
+        return None
+
+    def _infer_books_authors_fk(
+        self, schema_tables: dict, fk_map: dict
+    ) -> Optional[Tuple[dict, str, str]]:
+        """
+        Resolve books -> authors on author_id from fk_map, or infer from column names
+        when the API sends schema only (empty foreign_keys).
+
+        Returns (fk_edge, books_table_key, authors_table_key) or None.
+        """
+        books_t = self._library_books_table(schema_tables)
+        authors_t = self._library_authors_table(schema_tables)
+        if not books_t or not authors_t:
+            return None
+        fk = self._find_fk_from_table_to_table(books_t, authors_t, fk_map)
+        if fk and fk["from_col"].lower() == "author_id":
+            return fk, books_t, authors_t
+        bcols = {c.lower() for c in schema_tables[books_t]}
+        acols = {c.lower() for c in schema_tables[authors_t]}
+        if "author_id" in bcols and "author_id" in acols:
+            return (
+                {
+                    "from_col": "author_id",
+                    "to_table": authors_t,
+                    "to_col": "author_id",
+                },
+                books_t,
+                authors_t,
+            )
+        return None
+
+    def _library_branches_table(self, schema_tables: dict) -> Optional[str]:
+        for name in ("branches", "branch"):
+            if name in schema_tables:
+                return name
+        return None
+
+    def _infer_books_branches_fk(
+        self, schema_tables: dict, fk_map: dict
+    ) -> Optional[Tuple[dict, str, str]]:
+        """books.branch_id → branches.branch_id (explicit FK or inferred from columns)."""
+        books_t = self._library_books_table(schema_tables)
+        branches_t = self._library_branches_table(schema_tables)
+        if not books_t or not branches_t:
+            return None
+        fk = self._find_fk_from_table_to_table(books_t, branches_t, fk_map)
+        if fk and fk["from_col"].lower() == "branch_id":
+            return fk, books_t, branches_t
+        bcols = {c.lower() for c in schema_tables[books_t]}
+        rcols = {c.lower() for c in schema_tables[branches_t]}
+        if "branch_id" in bcols and "branch_id" in rcols:
+            return (
+                {
+                    "from_col": "branch_id",
+                    "to_table": branches_t,
+                    "to_col": "branch_id",
+                },
+                books_t,
+                branches_t,
+            )
+        return None
+
+    def _library_reviews_table(self, schema_tables: dict) -> Optional[str]:
+        for name in ("reviews", "review"):
+            if name in schema_tables:
+                return name
+        return None
+
+    def _infer_reviews_books_fk(
+        self, schema_tables: dict, fk_map: dict
+    ) -> Optional[Tuple[dict, str, str]]:
+        """reviews.book_id → books.book_id (FK map or column inference)."""
+        books_t = self._library_books_table(schema_tables)
+        rev_t = self._library_reviews_table(schema_tables)
+        if not books_t or not rev_t:
+            return None
+        fk = self._find_fk_from_table_to_table(rev_t, books_t, fk_map)
+        if fk and fk["from_col"].lower() == "book_id":
+            return fk, rev_t, books_t
+        rcols = {c.lower() for c in schema_tables[rev_t]}
+        bcols = {c.lower() for c in schema_tables[books_t]}
+        if "book_id" in rcols and "book_id" in bcols:
+            return (
+                {
+                    "from_col": "book_id",
+                    "to_table": books_t,
+                    "to_col": "book_id",
+                },
+                rev_t,
+                books_t,
+            )
+        return None
+
+    def _select_projects_only_column(
+        self, select_clause: str, col: str, table: str
+    ) -> bool:
+        """True if SELECT list is a single projection of col (optionally DISTINCT, qualified)."""
+        parts = self._split_select_clause_items(select_clause.strip())
+        if len(parts) != 1:
+            return False
+        p = parts[0].strip()
+        p = re.sub(r"^\s*DISTINCT\s+", "", p, flags=re.IGNORECASE)
+        pl = p.lower()
+        cl = col.lower()
+        tl = table.lower()
+        if pl == cl:
+            return True
+        if pl == f"{tl}.{cl}":
+            return True
+        if re.match(rf"^\w+\.{re.escape(cl)}$", pl, re.IGNORECASE):
+            return True
+        return False
+
+    def _sql_top_level_regex_search(self, sql: str, pattern: str) -> bool:
+        """True if regex matches at parenthesis depth 0 (ignores GROUP BY/HAVING in subqueries)."""
+        depth = 0
+        i = 0
+        n = len(sql)
+        while i < n:
+            ch = sql[i]
+            if ch == "(":
+                depth += 1
+                i += 1
+                continue
+            if ch == ")":
+                depth = max(0, depth - 1)
+                i += 1
+                continue
+            if depth == 0 and re.match(pattern, sql[i:], re.IGNORECASE):
+                return True
+            i += 1
+        return False
 
     def _prefer_enrollment_bridge_students_courses(
         self, start: str, goal: str, question_lower: str
@@ -453,7 +617,89 @@ class SQLPatternCorrector:
         )
         logger.info("Fixed enrolled_students hallucination with enrollment join chain")
         return fixed
-    
+
+    def _extract_genre_label_from_question(self, question: str) -> Optional[str]:
+        """
+        Parse a genre/category label from NL when the word 'genre' appears.
+        Examples: 'in the Fiction genre', 'Science Fiction genre', 'genre is Mystery'
+        """
+        if not question:
+            return None
+        bad = {
+            "all",
+            "any",
+            "each",
+            "every",
+            "some",
+            "the",
+            "a",
+            "an",
+            "other",
+            "same",
+            "this",
+            "that",
+            "book",
+            "books",
+        }
+        patterns = (
+            r"\bin\s+the\s+([A-Za-z][A-Za-z\s'-]{0,48}?)\s+genre\b",
+            r"\bin\s+([A-Za-z][A-Za-z\s'-]{0,48}?)\s+genre\b",
+            r"\b([A-Za-z][A-Za-z\s'-]{0,48}?)\s+genre\b",
+            r"\bgenre\s+(?:is\s+|=)?\s*['\"]?([A-Za-z][A-Za-z\s'-]{0,48})",
+        )
+        for pat in patterns:
+            m = re.search(pat, question, re.IGNORECASE)
+            if not m:
+                continue
+            val = m.group(1).strip().strip("'\"").strip()
+            if len(val) < 2:
+                continue
+            if val.lower() in bad:
+                continue
+            return val
+        return None
+
+    def _fix_genre_literal_from_question(self, sql: str, question: str) -> str:
+        """
+        When NL names a genre and SQL uses genre = '...' but that literal never
+        appears in the question, replace it with the parsed label from NL.
+
+        Narrow triggers: question and SQL both mention 'genre'; extracted label
+        must be a substring of the question; SQL literal must not be.
+        """
+        if not question or not sql:
+            return sql
+        ql = question.lower()
+        if "genre" not in ql:
+            return sql
+        if not re.search(r"\bgenre\b", sql, re.IGNORECASE):
+            return sql
+
+        extracted = self._extract_genre_label_from_question(question)
+        if not extracted:
+            return sql
+        ex_low = extracted.lower()
+        if ex_low not in ql:
+            return sql
+
+        def repl(match) -> str:
+            prefix, lit = match.group(1), match.group(2)
+            lit_low = lit.strip().lower()
+            if lit_low in ql:
+                return match.group(0)
+            esc = extracted.replace("'", "''")
+            logger.info("Aligned genre literal from question wording: %r -> %r", lit, extracted)
+            return f"{prefix}'{esc}'"
+
+        new_sql, n = re.subn(
+            r"(\b\w*\.?genre\s*=\s*)'([^']*)'",
+            repl,
+            sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return new_sql if n else sql
+
     def _fix_text_corruption(self, sql: str) -> str:
         """
         Fix text corruption/tokenization errors in generated SQL.
@@ -480,12 +726,12 @@ class SQLPatternCorrector:
         # Protect ORDER BY
         sql = re.sub(r'\bORDER\s+BY\b', '__PROTECTED_ORDER_BY__', sql, flags=re.IGNORECASE)
         
-        # Fix merged text patterns (keyword fragments merged with previous word)
-        # Pattern: word+ROUP BY → word GROUP BY (e.g., "department_idROUP BY" → "department_id GROUP BY")
-        sql = re.sub(r'(\w)ROUP\s+BY\b', r'\1 GROUP BY', sql, flags=re.IGNORECASE)
-        
-        # Pattern: word+RDER BY → word ORDER BY (e.g., "columnORDER BY" → "column ORDER BY")
-        sql = re.sub(r'(\w)RDER\s+BY\b', r'\1 ORDER BY', sql, flags=re.IGNORECASE)
+        # Fix merged text patterns (keyword fragments merged with previous identifier)
+        # Use \w+ so "member_idRDER BY" → "member_id ORDER BY" (not "member_i ORDER BY").
+        # Pattern: identifier+ROUP BY → identifier GROUP BY
+        sql = re.sub(r'(\w+)ROUP\s+BY\b', r'\1 GROUP BY', sql, flags=re.IGNORECASE)
+        # Pattern: identifier+RDER BY → identifier ORDER BY
+        sql = re.sub(r'(\w+)RDER\s+BY\b', r'\1 ORDER BY', sql, flags=re.IGNORECASE)
         
         # Restore protected keywords
         sql = re.sub(r'__PROTECTED_GROUP_BY__', 'GROUP BY', sql)
@@ -719,6 +965,15 @@ class SQLPatternCorrector:
         # If no ranking pattern found, return original SQL
         if not order_direction:
             return sql
+
+        # If SQL already has explicit ordering, do not rebuild the whole query.
+        if re.search(r"\bORDER\s+BY\b", sql_upper):
+            return sql
+
+        # Ranking wording can co-exist with aggregate intent ("top departments by average GPA").
+        # Avoid full-query rewrite in those cases; other group-by/corrector steps handle them.
+        if re.search(r"\b(average|avg|sum|total|count|minimum|min(?:imum)?|maximum|max(?:imum)?)\b", question_lower):
+            return sql
         
         # Check if SQL uses aggregation without GROUP BY (indicates incorrect aggregation)
         has_aggregation = bool(re.search(r'\b(AVG|SUM|COUNT|MIN|MAX)\s*\(', sql_upper))
@@ -781,6 +1036,10 @@ class SQLPatternCorrector:
         
         # If still no attribute, return original
         if not by_attribute:
+            return sql
+
+        entity_columns = {c.lower() for c in schema_tables.get(entity, [])}
+        if entity_columns and by_attribute.lower() not in entity_columns:
             return sql
         
         # Build proper SELECT clause based on entity
@@ -1190,11 +1449,23 @@ class SQLPatternCorrector:
             agg in select_clause 
             for agg in ['COUNT(', 'SUM(', 'AVG(', 'MAX(', 'MIN(', 'COUNT (', 'SUM (', 'AVG (', 'MAX (', 'MIN (']
         )
+
+        # HAVING commonly relies on grouped semantics; avoid stripping GROUP BY in such queries.
+        if re.search(r'\bHAVING\b', sql_upper):
+            return sql
         
         # If no aggregation, remove GROUP BY
         if not has_aggregation:
             logger.info(f"Removing incorrect GROUP BY from query without aggregation: {sql}")
-            sql = re.sub(r'\s+GROUP\s+BY\s+[^;]+', '', sql, flags=re.IGNORECASE)
+            # Remove only the GROUP BY list and stop at clause boundaries.
+            # This prevents swallowing HAVING/ORDER BY/LIMIT when present.
+            sql = re.sub(
+                r'\s+GROUP\s+BY\s+.*?(?=\s+HAVING\b|\s+ORDER\s+BY\b|\s+LIMIT\b|;|$)',
+                '',
+                sql,
+                flags=re.IGNORECASE | re.DOTALL,
+                count=1
+            )
         
         return sql
     
@@ -1416,8 +1687,10 @@ class SQLPatternCorrector:
             return self._inject_join(sql, question_lower, schema_tables, fk_map, tables_in_sql)
         
         # Check for patterns that indicate missing JOIN
-        # Pattern 1: "X with their Y" or "X with Y name"
+        # Pattern 1: "X with their Y" or "X with Y name" (also "along with the …")
         if re.search(r'\bwith\s+(their|its|the)\s+\w+', question_lower):
+            return self._inject_join_from_question(sql, question_lower, schema_tables, fk_map)
+        if re.search(r'\balong\s+with\s+the\s+\w+', question_lower):
             return self._inject_join_from_question(sql, question_lower, schema_tables, fk_map)
         
         # Pattern 2: "X in/from Y department/category"
@@ -1503,6 +1776,13 @@ class SQLPatternCorrector:
             return True
         if tl.endswith("s") and len(tl) > 1 and tl[:-1] in question_lower:
             return True
+        # e.g. branches -> branch (…es plural); avoid matching "branche" from[:-1] only
+        if tl.endswith("es") and len(tl) > 3:
+            stem = tl[:-2]
+            if len(stem) >= 3 and re.search(
+                rf"\b{re.escape(stem)}\b", question_lower, re.IGNORECASE
+            ):
+                return True
         if not tl.endswith("s") and f"{tl}s" in question_lower:
             return True
         return False
@@ -1547,13 +1827,16 @@ class SQLPatternCorrector:
         """
         When NL asks for names from multiple joined tables but SELECT only lists one side,
         append display columns for missing tables using existing aliases (schema-driven).
+
+        Triggers: (1) "names" + "with" (original), or (2) "with"/"along with" when at least
+        two joined tables are mentioned in the question (e.g. books + branch/branches).
         """
         if "JOIN" not in sql.upper():
             return sql
         qlow = question.lower()
-        if not re.search(r"\bnames?\b", qlow):
+        if not re.search(r"\b(with|along\s+with)\b", qlow):
             return sql
-        if not re.search(r"\bwith\b", qlow):
+        if re.search(r"\bnames?\b", qlow) and not re.search(r"\bwith\b", qlow):
             return sql
 
         select_match = re.search(
@@ -1613,7 +1896,269 @@ class SQLPatternCorrector:
         )
         logger.info("Expanded SELECT for joined tables: added %s", additions)
         return sql
-    
+
+    def _qualify_ambiguous_select_columns(self, sql: str, schema_tables: dict) -> str:
+        """
+        Qualify bare SELECT columns that exist on more than one joined table
+        (e.g. branch_id on books and branches -> books.branch_id).
+        """
+        if "JOIN" not in sql.upper():
+            return sql
+        select_match = re.search(
+            r"\bSELECT\s+(DISTINCT\s+)?(.+?)\s+FROM\b",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not select_match:
+            return sql
+        select_clause = select_match.group(2).strip()
+        if re.search(r"(?<!\.)\*\b", select_clause):
+            return sql
+        if re.search(r"\b(COUNT|AVG|SUM|MAX|MIN)\s*\(", select_clause, re.IGNORECASE):
+            return sql
+
+        alias_to_table, table_to_alias = self._build_alias_to_table_map(sql)
+        joined_tables = list(alias_to_table.values())
+        if len(set(joined_tables)) < 2:
+            return sql
+
+        from_match = re.search(
+            r"FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+(?:JOIN|WHERE|ORDER|GROUP|LIMIT|;|$))",
+            sql,
+            re.IGNORECASE,
+        )
+        if not from_match:
+            return sql
+        main_table = from_match.group(1).lower()
+        main_alias = (
+            from_match.group(2).lower() if from_match.group(2) else main_table
+        )
+
+        def tables_having_column(col: str) -> List[str]:
+            c = col.lower()
+            found: List[str] = []
+            for t in joined_tables:
+                tl = t.lower()
+                cols = [x.lower() for x in schema_tables.get(tl, [])]
+                if c in cols:
+                    found.append(tl)
+            return found
+
+        parts: List[str] = []
+        depth = 0
+        cur: List[str] = []
+        for ch in select_clause:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append("".join(cur).strip())
+                cur = []
+                continue
+            cur.append(ch)
+        if cur:
+            parts.append("".join(cur).strip())
+
+        new_parts: List[str] = []
+        changed = False
+        for p in parts:
+            p_st = p.strip()
+            if not p_st:
+                new_parts.append(p_st)
+                continue
+            if re.match(r"^\w+\s*\(", p_st, re.IGNORECASE):
+                new_parts.append(p_st)
+                continue
+            if "." in p_st.split()[0]:
+                new_parts.append(p_st)
+                continue
+            m = re.match(r"^(\w+)(\s+AS\s+\w+)?$", p_st, re.IGNORECASE)
+            if not m:
+                new_parts.append(p_st)
+                continue
+            col = m.group(1)
+            as_suffix = m.group(2) or ""
+            if col.upper() in ("DISTINCT",):
+                new_parts.append(p_st)
+                continue
+            on_tables = tables_having_column(col)
+            if len(on_tables) > 1 and main_table in on_tables:
+                new_parts.append(f"{main_alias}.{col}{as_suffix}")
+                changed = True
+            else:
+                new_parts.append(p_st)
+
+        if not changed:
+            return sql
+
+        new_select = ", ".join(new_parts)
+        distinct_prefix = select_match.group(1) or ""
+        if distinct_prefix:
+            rebuilt_select = f"SELECT {distinct_prefix}{new_select}"
+        else:
+            rebuilt_select = f"SELECT {new_select}"
+        new_sql = re.sub(
+            r"\bSELECT\s+.*?\s+FROM\b",
+            f"{rebuilt_select} FROM",
+            sql,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        logger.info("Qualified ambiguous SELECT columns (multi-table): %s", new_select)
+        return new_sql
+
+    def _split_select_clause_items(self, select_clause: str) -> List[str]:
+        """Split top-level SELECT list by commas (respects parentheses)."""
+        parts: List[str] = []
+        depth = 0
+        cur: List[str] = []
+        for ch in select_clause:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append("".join(cur).strip())
+                cur = []
+                continue
+            cur.append(ch)
+        if cur:
+            parts.append("".join(cur).strip())
+        return parts
+
+    def _select_item_semantic_key(
+        self,
+        part: str,
+        alias_to_table: Dict[str, str],
+        schema_tables: dict,
+        joined_tables: set,
+        main_table: str,
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Map a simple SELECT item to (physical_table_lower, column_lower) for deduplication.
+        Returns None when the expression should not participate in semantic dedupe.
+        """
+        p_st = part.strip()
+        if not p_st:
+            return None
+        if re.match(r"^\w+\s*\(", p_st, re.IGNORECASE):
+            return None
+        first_tok = p_st.split()[0]
+        if "." in first_tok:
+            alias, col = first_tok.split(".", 1)
+            al, co = alias.lower(), col.lower()
+            phys = alias_to_table.get(al)
+            if phys is None:
+                st = {t.lower() for t in schema_tables}
+                if al in st:
+                    phys = al
+            if not phys:
+                return None
+            phys_l = phys.lower()
+            if phys_l not in joined_tables:
+                return None
+            cols = [c.lower() for c in schema_tables.get(phys_l, [])]
+            if co not in cols:
+                return None
+            return (phys_l, co)
+
+        m = re.match(r"^(\w+)(\s+AS\s+\w+)?$", p_st, re.IGNORECASE)
+        if not m:
+            return None
+        col = m.group(1).lower()
+        if col == "distinct":
+            return None
+        owners: List[str] = []
+        for t in joined_tables:
+            tl = t.lower()
+            cols = [c.lower() for c in schema_tables.get(tl, [])]
+            if col in cols:
+                owners.append(tl)
+        main_l = main_table.lower()
+        if len(owners) == 1:
+            return (owners[0], col)
+        if len(owners) > 1 and main_l in owners:
+            return (main_l, col)
+        if len(owners) > 1:
+            return ("__ambiguous__", col)
+        return None
+
+    def _dedupe_select_columns(self, sql: str, schema_tables: dict) -> str:
+        """
+        Remove redundant SELECT items that refer to the same physical column after joins
+        (e.g. branch_name and b.branch_name; first_name and members.first_name).
+        """
+        if "JOIN" not in sql.upper():
+            return sql
+        select_match = re.search(
+            r"\bSELECT\s+(DISTINCT\s+)?(.+?)\s+FROM\b",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not select_match:
+            return sql
+        select_clause = select_match.group(2).strip()
+        if re.search(r"(?<!\.)\*\b", select_clause):
+            return sql
+        if re.search(r"\b(COUNT|AVG|SUM|MAX|MIN)\s*\(", select_clause, re.IGNORECASE):
+            return sql
+
+        alias_to_table, _ = self._build_alias_to_table_map(sql)
+        joined_tables = {t.lower() for t in alias_to_table.values()}
+        if len(joined_tables) < 2:
+            return sql
+
+        from_match = re.search(
+            r"FROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+(?:JOIN|WHERE|ORDER|GROUP|LIMIT|;|$))",
+            sql,
+            re.IGNORECASE,
+        )
+        if not from_match:
+            return sql
+        main_table = from_match.group(1)
+
+        parts = self._split_select_clause_items(select_clause)
+        seen: set[Tuple[str, str]] = set()
+        new_parts: List[str] = []
+        dropped = 0
+        for p in parts:
+            p_st = p.strip()
+            if not p_st:
+                new_parts.append(p_st)
+                continue
+            key = self._select_item_semantic_key(
+                p_st, alias_to_table, schema_tables, joined_tables, main_table
+            )
+            if key is None:
+                new_parts.append(p_st)
+                continue
+            if key in seen:
+                dropped += 1
+                continue
+            seen.add(key)
+            new_parts.append(p_st)
+
+        if dropped == 0:
+            return sql
+
+        new_select = ", ".join(new_parts)
+        distinct_prefix = select_match.group(1) or ""
+        rebuilt = (
+            f"SELECT {distinct_prefix}{new_select}"
+            if distinct_prefix
+            else f"SELECT {new_select}"
+        )
+        new_sql = re.sub(
+            r"\bSELECT\s+.*?\s+FROM\b",
+            f"{rebuilt} FROM",
+            sql,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        logger.info("Deduplicated SELECT columns (removed %s redundant items)", dropped)
+        return new_sql
+
     def _inject_join_from_question(
         self,
         sql: str,
@@ -1629,25 +2174,18 @@ class SQLPatternCorrector:
         
         main_table = from_match.group(1).lower()
         
-        # Find target table mentioned in question
-        # Check both exact match and partial match (e.g., "department" matches "departments")
+        # Find target table mentioned in question (plural/singular, e.g. branch ↔ branches)
         target_table = None
+        ql = question.lower()
         for table_name in schema_tables.keys():
             table_lower = table_name.lower()
-            if table_lower != main_table:
-                # Exact match
-                if table_lower in question:
-                    target_table = table_lower
-                    break
-                # Partial match: remove trailing 's' and check
-                if table_lower.endswith('s'):
-                    singular = table_lower[:-1]
-                    if singular in question:
-                        target_table = table_lower
-                        break
-        
+            if table_lower == main_table:
+                continue
+            if self._question_mentions_schema_table(ql, table_lower):
+                target_table = table_lower
+                break
+
         if not target_table:
-            ql = question.lower()
             for ent_pat, attr_pat, detail_table in self.entity_patterns:
                 if detail_table not in schema_tables:
                     continue
@@ -1770,23 +2308,24 @@ class SQLPatternCorrector:
     
     def _find_fk_relationship(self, table1: str, table2: str, fk_map: dict) -> Optional[dict]:
         """Find FK relationship between two tables (either direction)"""
+        t1, t2 = table1.lower(), table2.lower()
         # Check table1 -> table2
-        for fk in fk_map.get(table1, []):
-            if fk['to_table'].lower() == table2:
+        for fk in fk_map.get(t1, []):
+            if fk['to_table'].lower() == t2:
                 return {
-                    'from_table': table1,
+                    'from_table': t1,
                     'from_col': fk['from_col'],
-                    'to_table': table2,
+                    'to_table': t2,
                     'to_col': fk['to_col']
                 }
         
         # Check table2 -> table1
-        for fk in fk_map.get(table2, []):
-            if fk['to_table'].lower() == table1:
+        for fk in fk_map.get(t2, []):
+            if fk['to_table'].lower() == t1:
                 return {
-                    'from_table': table2,
+                    'from_table': t2,
                     'from_col': fk['from_col'],
-                    'to_table': table1,
+                    'to_table': t1,
                     'to_col': fk['to_col']
                 }
         
@@ -2205,6 +2744,559 @@ class SQLPatternCorrector:
                     best = c
         return best
 
+    def _extract_grouping_entity_from_question(self, question: str) -> Optional[str]:
+        """Last-resort dimension word from NL (each author, per team, count ... by department)."""
+        ql = question.lower().strip()
+        for pat in (
+            r"\bfor\s+each\s+(\w+)",
+            r"\bin\s+each\s+(\w+)",
+            r"\bper\s+(\w+)",
+            r"\beach\s+(\w+)",
+        ):
+            m = re.search(pat, ql)
+            if m:
+                return m.group(1).lower()
+        m = re.search(
+            r"\b(?:how\s+many|count|number\s+of)\b.*?\bby\s+(\w+)",
+            ql,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).lower()
+        return None
+
+    def _schema_table_for_grouping_word(
+        self, word: str, schema_tables: dict
+    ) -> Optional[str]:
+        wl = word.lower()
+        for table_name in schema_tables.keys():
+            tl = table_name.lower()
+            if wl in tl:
+                return tl
+            if len(wl) > 1 and tl.startswith(wl[:-1]):
+                return tl
+        return None
+
+    def _preferred_group_id_column(self, table: str, schema_tables: dict) -> Optional[str]:
+        """Pick a stable GROUP BY id column for a table (schema-driven, plural-safe)."""
+        tl = table.lower()
+        cols = [c.lower() for c in schema_tables.get(tl, [])]
+        if not cols:
+            return None
+        if tl.endswith("ies"):
+            stem = tl[:-3] + "y"
+        elif tl.endswith("es") and len(tl) > 4:
+            stem = tl[:-2]
+        elif tl.endswith("s") and not tl.endswith("ss"):
+            stem = tl[:-1]
+        else:
+            stem = tl
+        cand = f"{stem}_id"
+        if cand in cols:
+            return cand
+        for c in cols:
+            if c.endswith("_id"):
+                return c
+        return None
+
+    def _group_by_expression_invalid(
+        self,
+        expr: str,
+        alias_to_table: Dict[str, str],
+        schema_tables: dict,
+    ) -> bool:
+        expr = expr.strip()
+        if not expr or re.match(r"^\w+\s*\(", expr, re.IGNORECASE):
+            return False
+        tok = expr.split()[0].split(",")[0]
+        if "." in tok:
+            als, col = tok.split(".", 1)
+            al = als.lower()
+            co = col.lower()
+            phys = alias_to_table.get(al)
+            if phys is None and al in {t.lower() for t in schema_tables}:
+                phys = al
+            if not phys or phys not in schema_tables:
+                return True
+            scols = [c.lower() for c in schema_tables[phys]]
+            return co not in scols
+        co = tok.lower()
+        owners = []
+        for phys in sorted(set(alias_to_table.values())):
+            scols = [c.lower() for c in schema_tables.get(phys, [])]
+            if co in scols:
+                owners.append(phys)
+        return len(owners) == 0
+
+    def _find_fk_from_table_to_table(
+        self, from_table: str, to_table: str, fk_map: dict
+    ) -> Optional[dict]:
+        ft, tt = from_table.lower(), to_table.lower()
+        for fk in fk_map.get(ft, []):
+            if fk["to_table"].lower() == tt:
+                return fk
+        return None
+
+    def _parse_review_count_threshold_from_question(
+        self, question: str
+    ) -> Optional[Tuple[str, int]]:
+        """
+        Extract (comparison_op, n) from phrases like 'more than 3 reviews',
+        'at least 2 reviews', 'fewer than 5 reviews'.
+        """
+        q = question.lower()
+        patterns: List[Tuple[str, str]] = [
+            (r"\b(?:more\s+than|greater\s+than)\s+(\d+)\s+reviews?\b", ">"),
+            (r"\bat\s+least\s+(\d+)\s+reviews?\b", ">="),
+            (r"\b(?:fewer\s+than|less\s+than)\s+(\d+)\s+reviews?\b", "<"),
+            (r"\bat\s+most\s+(\d+)\s+reviews?\b", "<="),
+            (r"\bexactly\s+(\d+)\s+reviews?\b", "="),
+        ]
+        for pat, op in patterns:
+            m = re.search(pat, q)
+            if m:
+                return op, int(m.group(1))
+        return None
+
+    def _parse_book_count_threshold_from_question(
+        self, question: str
+    ) -> Optional[Tuple[str, int]]:
+        """
+        Extract (comparison_op, n) from phrases like 'more than 2 books',
+        'at least 3 books', 'fewer than 5 books'.
+        """
+        q = question.lower()
+        patterns: List[Tuple[str, str]] = [
+            (r"\b(?:more\s+than|greater\s+than)\s+(\d+)\s+books?\b", ">"),
+            (r"\bat\s+least\s+(\d+)\s+books?\b", ">="),
+            (r"\b(?:fewer\s+than|less\s+than)\s+(\d+)\s+books?\b", "<"),
+            (r"\bat\s+most\s+(\d+)\s+books?\b", "<="),
+            (r"\bexactly\s+(\d+)\s+books?\b", "="),
+        ]
+        for pat, op in patterns:
+            m = re.search(pat, q)
+            if m:
+                return op, int(m.group(1))
+        return None
+
+    def _rewrite_library_review_threshold_query(
+        self,
+        sql: str,
+        op: str,
+        n: int,
+        books_t: str,
+        reviews_t: str,
+        schema_tables: dict,
+    ) -> str:
+        """
+        Model often returns SELECT book_id FROM reviews for 'books with >N reviews'.
+        Use books + IN (subquery on reviews) so late join stripping cannot drop reviews.
+        """
+        if (
+            re.search(r"\bIN\s*\(\s*SELECT\b", sql, re.IGNORECASE)
+            and re.search(r"HAVING\s+COUNT\s*\(\s*\*\s*\)", sql, re.IGNORECASE)
+            and re.search(rf"\bFROM\s+{re.escape(books_t)}\b", sql, re.IGNORECASE)
+            and re.search(rf"\bFROM\s+{re.escape(reviews_t)}\b", sql, re.IGNORECASE)
+        ):
+            return sql
+
+        sql_upper = sql.upper()
+        if "JOIN" in sql_upper:
+            return sql
+        if self._sql_top_level_regex_search(sql, r"\bGROUP\s+BY\b") or self._sql_top_level_regex_search(
+            sql, r"\bHAVING\b"
+        ):
+            return sql
+
+        from_match = re.search(
+            r"\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s*(?:WHERE|JOIN|ORDER|GROUP|LIMIT|HAVING|;|$))",
+            sql,
+            re.IGNORECASE,
+        )
+        if not from_match:
+            return sql
+        if from_match.group(1).lower() != reviews_t.lower():
+            return sql
+
+        tail = sql[from_match.end() :].lstrip()
+        if tail.upper().startswith("WHERE"):
+            return sql
+
+        select_match = re.search(
+            r"\bSELECT\s+(.*?)\s+FROM\b", sql, re.IGNORECASE | re.DOTALL
+        )
+        if not select_match:
+            return sql
+        sel_raw = select_match.group(1).strip()
+        select_upper = sel_raw.upper()
+        if any(a in select_upper for a in ("COUNT(", "AVG(", "SUM(", "MIN(", "MAX(")):
+            return sql
+        if not self._select_projects_only_column(sel_raw, "book_id", reviews_t):
+            return sql
+
+        bcols = [c.lower() for c in schema_tables.get(books_t, [])]
+        select_cols = "book_id"
+        if "title" in bcols:
+            select_cols = "book_id, title"
+
+        had_sc = bool(re.search(r";\s*$", sql.strip()))
+        sub = (
+            f"SELECT book_id FROM {reviews_t} "
+            f"GROUP BY book_id HAVING COUNT(*) {op} {n}"
+        )
+        new_sql = f"SELECT {select_cols} FROM {books_t} WHERE book_id IN ({sub})"
+        if had_sc:
+            new_sql += ";"
+        logger.info(
+            "Rewrote library book review-count threshold (books=%s reviews=%s op=%s n=%s)",
+            books_t,
+            reviews_t,
+            op,
+            n,
+        )
+        return new_sql
+
+    def _fix_library_book_review_count_threshold(
+        self,
+        sql: str,
+        question: str,
+        schema_tables: dict,
+        fk_map: dict,
+    ) -> str:
+        """
+        NL: books with more/fewer than N reviews (child is reviews, not books).
+        Rewrites bare SELECT book_id FROM reviews into books filtered by review counts.
+        """
+        parsed = self._parse_review_count_threshold_from_question(question)
+        if not parsed:
+            return sql
+        qlow = question.lower()
+        if not re.search(r"\bbooks?\b", qlow) or not re.search(r"\breviews?\b", qlow):
+            return sql
+        inferred = self._infer_reviews_books_fk(schema_tables, fk_map)
+        if not inferred:
+            return sql
+        _fk, reviews_t, books_t = inferred
+        return self._rewrite_library_review_threshold_query(
+            sql, parsed[0], parsed[1], books_t, reviews_t, schema_tables
+        )
+
+    def _fix_library_parent_book_count_threshold(
+        self,
+        sql: str,
+        question: str,
+        schema_tables: dict,
+        fk_map: dict,
+    ) -> str:
+        """
+        NL: parent entity (authors / branches) with more/fewer than N books.
+        Rewrites bare SELECT FROM parent or SELECT fk FROM books into
+        parent + IN (SELECT ... FROM books GROUP BY ... HAVING COUNT(*) ...).
+        """
+        parsed = self._parse_book_count_threshold_from_question(question)
+        if not parsed:
+            return sql
+        op, n = parsed
+        qlow = question.lower()
+        books_t = self._library_books_table(schema_tables)
+        if not books_t:
+            return sql
+
+        if re.search(r"\bauthors?\b", qlow):
+            inferred = self._infer_books_authors_fk(schema_tables, fk_map)
+            if not inferred:
+                return sql
+            fk, books_t2, parent_t = inferred
+            fk_col = fk["from_col"].lower()
+            if fk_col != "author_id":
+                return sql
+            acols = [c.lower() for c in schema_tables.get(parent_t, [])]
+            extra_select = (
+                "a.first_name, a.last_name"
+                if "first_name" in acols and "last_name" in acols
+                else None
+            )
+            return self._rewrite_library_book_threshold_query(
+                sql,
+                op,
+                n,
+                books_t2,
+                parent_t,
+                fk_col,
+                parent_alias="a",
+                id_alias_col=("a.author_id", f"a.{fk_col}"),
+                extra_select_suffix=extra_select,
+                allow_from_books_single_fk=False,
+            )
+
+        if re.search(r"\bbranches?\b", qlow):
+            inferred = self._infer_books_branches_fk(schema_tables, fk_map)
+            if not inferred:
+                return sql
+            fk, books_t2, parent_t = inferred
+            fk_col = fk["from_col"].lower()
+            if fk_col != "branch_id":
+                return sql
+            bcols = [c.lower() for c in schema_tables.get(parent_t, [])]
+            extra = "br.branch_name" if "branch_name" in bcols else None
+            return self._rewrite_library_book_threshold_query(
+                sql,
+                op,
+                n,
+                books_t2,
+                parent_t,
+                fk_col,
+                parent_alias="br",
+                id_alias_col=(f"br.{fk_col}", f"br.{fk_col}"),
+                extra_select_suffix=extra,
+                allow_from_books_single_fk=True,
+            )
+
+        return sql
+
+    def _rewrite_library_book_threshold_query(
+        self,
+        sql: str,
+        op: str,
+        n: int,
+        books_t: str,
+        parent_t: str,
+        fk_col: str,
+        parent_alias: str,
+        id_alias_col: Tuple[str, str],
+        extra_select_suffix: Optional[str],
+        allow_from_books_single_fk: bool,
+    ) -> str:
+        """Shared rewrite for authors- or branches-style book-count thresholds."""
+        id_sel, id_where = id_alias_col
+
+        if (
+            re.search(r"\bIN\s*\(\s*SELECT\b", sql, re.IGNORECASE)
+            and re.search(r"HAVING\s+COUNT\s*\(\s*\*\s*\)", sql, re.IGNORECASE)
+            and re.search(rf"\bFROM\s+{re.escape(parent_t)}\b", sql, re.IGNORECASE)
+        ):
+            return sql
+
+        sql_upper = sql.upper()
+        if "JOIN" in sql_upper:
+            return sql
+        if self._sql_top_level_regex_search(sql, r"\bGROUP\s+BY\b") or self._sql_top_level_regex_search(
+            sql, r"\bHAVING\b"
+        ):
+            return sql
+
+        from_match = re.search(
+            r"\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s*(?:WHERE|JOIN|ORDER|GROUP|LIMIT|HAVING|;|$))",
+            sql,
+            re.IGNORECASE,
+        )
+        if not from_match:
+            return sql
+        from_tbl = from_match.group(1).lower()
+
+        select_match = re.search(
+            r"\bSELECT\s+(.*?)\s+FROM\b", sql, re.IGNORECASE | re.DOTALL
+        )
+        if not select_match:
+            return sql
+        sel_raw = select_match.group(1).strip()
+        select_upper = sel_raw.upper()
+        if any(a in select_upper for a in ("COUNT(", "AVG(", "SUM(", "MIN(", "MAX(")):
+            return sql
+
+        had_sc = bool(re.search(r";\s*$", sql.strip()))
+        new_sql: Optional[str] = None
+
+        if from_tbl == parent_t.lower():
+            if extra_select_suffix:
+                new_sql = (
+                    f"SELECT {id_sel}, {extra_select_suffix} FROM {parent_t} {parent_alias} "
+                    f"WHERE {id_where} IN (SELECT {fk_col} FROM {books_t} "
+                    f"GROUP BY {fk_col} HAVING COUNT(*) {op} {n})"
+                )
+            else:
+                new_sql = (
+                    f"SELECT {fk_col} FROM {books_t} GROUP BY {fk_col} "
+                    f"HAVING COUNT(*) {op} {n}"
+                )
+        elif allow_from_books_single_fk and from_tbl == books_t.lower():
+            if not self._select_projects_only_column(sel_raw, fk_col, books_t):
+                return sql
+            if extra_select_suffix:
+                new_sql = (
+                    f"SELECT {id_sel}, {extra_select_suffix} FROM {parent_t} {parent_alias} "
+                    f"WHERE {id_where} IN (SELECT {fk_col} FROM {books_t} "
+                    f"GROUP BY {fk_col} HAVING COUNT(*) {op} {n})"
+                )
+            else:
+                new_sql = (
+                    f"SELECT {fk_col} FROM {books_t} GROUP BY {fk_col} "
+                    f"HAVING COUNT(*) {op} {n}"
+                )
+
+        if not new_sql:
+            return sql
+        if had_sc:
+            new_sql += ";"
+        logger.info(
+            "Rewrote library book-count threshold (parent=%s op=%s n=%s)",
+            parent_t,
+            op,
+            n,
+        )
+        return new_sql
+
+    def _rewrite_count_books_per_author(
+        self, sql: str, question: str, schema_tables: dict, fk_map: dict
+    ) -> Optional[str]:
+        """
+        ML often copies student-DB GROUP BY department_name. For library-style schemas,
+        'how many books each author' should aggregate from books by author_id.
+        """
+        q = question.lower()
+        if not (
+            re.search(r"\b(how\s+many|count|number\s+of)\b", q)
+            and re.search(r"\bbooks?\b", q)
+            and (
+                re.search(r"\b(for\s+each|each|per)\s+authors?\b", q)
+                or re.search(r"\bby\s+authors?\b", q)
+                or re.search(r"\beach\s+author\b", q)
+            )
+        ):
+            return None
+        inferred = self._infer_books_authors_fk(schema_tables, fk_map)
+        if not inferred:
+            return None
+        fk, books_t, _authors_t = inferred
+        if fk["from_col"].lower() != "author_id":
+            return None
+        if "JOIN" in sql.upper() or re.search(r"\bWHERE\b", sql, re.IGNORECASE):
+            return None
+        had_sc = bool(re.search(r";\s*$", sql.strip()))
+        out = (
+            f"SELECT {books_t}.author_id, COUNT(*) AS cnt FROM {books_t} "
+            f"GROUP BY {books_t}.author_id"
+        )
+        if had_sc:
+            out += ";"
+        logger.info("Rewrote count-books-per-author query away from invalid GROUP BY")
+        return out
+
+    def _fix_invalid_group_by_columns(
+        self,
+        sql: str,
+        question: str,
+        schema_tables: dict,
+        fk_map: dict,
+    ) -> str:
+        """
+        Replace hallucinated GROUP BY columns (e.g. department_name on a schema that has
+        no such column) using NL + FK metadata. Student DB queries with valid
+        department_name are unchanged.
+        """
+        if "GROUP BY" not in sql.upper():
+            return sql
+        sql_upper = sql.upper()
+        if not any(a in sql_upper for a in ("COUNT(", "AVG(", "SUM(", "MAX(", "MIN(")):
+            return sql
+
+        gb_match = re.search(
+            r"\bGROUP\s+BY\s+(.+?)(?=\s+ORDER\s+BY|\s+HAVING|\s+LIMIT|;|\s*$)",
+            sql,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not gb_match:
+            return sql
+
+        alias_to_table, table_to_alias = self._build_alias_to_table_map(sql)
+        if not alias_to_table:
+            return sql
+
+        gb_parts = self._split_select_clause_items(gb_match.group(1).strip())
+        any_invalid = any(
+            self._group_by_expression_invalid(p, alias_to_table, schema_tables)
+            for p in gb_parts
+            if p.strip()
+        )
+        if not any_invalid:
+            return sql
+
+        rewritten = self._rewrite_count_books_per_author(
+            sql, question, schema_tables, fk_map
+        )
+        if rewritten:
+            return rewritten
+
+        ent = self._extract_grouping_entity_from_question(question)
+        if not ent:
+            return sql
+        target = self._schema_table_for_grouping_word(ent, schema_tables)
+        if not target:
+            return sql
+
+        from_match = re.search(
+            r"\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s*(?:WHERE|JOIN|ORDER|GROUP|LIMIT|HAVING|;|$))",
+            sql,
+            re.IGNORECASE,
+        )
+        if not from_match:
+            return sql
+        main_table = from_match.group(1).lower()
+        if "JOIN" in sql_upper:
+            return sql
+
+        id_col: Optional[str] = None
+        qual_gb: Optional[str] = None
+        main_alias = table_to_alias.get(main_table) or main_table
+
+        if target == main_table:
+            id_col = self._preferred_group_id_column(main_table, schema_tables)
+            if id_col:
+                qual_gb = f"{main_alias}.{id_col}"
+        else:
+            fk = self._find_fk_from_table_to_table(main_table, target, fk_map)
+            if fk:
+                id_col = fk["from_col"].lower()
+                qual_gb = f"{main_alias}.{id_col}"
+
+        if not qual_gb or not id_col:
+            return sql
+
+        sm = re.search(
+            r"\bSELECT\s+(.*?)\s+FROM\b", sql, re.IGNORECASE | re.DOTALL
+        )
+        if not sm:
+            return sql
+        select_inner = sm.group(1).strip()
+        new_select = select_inner
+        if re.match(
+            r"^COUNT\s*\(\s*\*\s*\)\s*$", select_inner, re.IGNORECASE
+        ) or re.match(
+            r"^COUNT\s*\(\s*\*\s*\)\s+AS\s+\w+$", select_inner, re.IGNORECASE
+        ):
+            new_select = f"{qual_gb}, COUNT(*) AS cnt"
+
+        new_sql = re.sub(
+            r"\bSELECT\s+.*?\s+FROM\b",
+            f"SELECT {new_select} FROM",
+            sql,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        new_sql = re.sub(
+            r"\bGROUP\s+BY\s+.+?(?=\s+ORDER\s+BY|\s+HAVING|\s+LIMIT|;|\s*$)",
+            f"GROUP BY {qual_gb}",
+            new_sql,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        logger.info(
+            "Fixed invalid GROUP BY using inferred dimension %s (entity=%r)",
+            qual_gb,
+            ent,
+        )
+        return new_sql
+
     def _fix_count_by_dimension(
         self, sql: str, question: str, schema_tables: dict
     ) -> str:
@@ -2374,13 +3466,24 @@ class SQLPatternCorrector:
         
         if columns:
             group_by_clause = f" GROUP BY {', '.join(columns)}"
-            # Add before WHERE if exists, else at end
-            where_match = re.search(r'\s+WHERE', sql, re.IGNORECASE)
-            if where_match:
-                insert_pos = where_match.start()
+            had_trailing_semicolon = sql.rstrip().endswith(";")
+            if had_trailing_semicolon:
+                sql = sql.rstrip().rstrip(";")
+
+            # Place GROUP BY after WHERE and before HAVING/ORDER BY/LIMIT.
+            order_match = re.search(r'\s+ORDER\s+BY\b', sql, re.IGNORECASE)
+            limit_match = re.search(r'\s+LIMIT\b', sql, re.IGNORECASE)
+            having_match = re.search(r'\s+HAVING\b', sql, re.IGNORECASE)
+            insert_candidates = [m.start() for m in [having_match, order_match, limit_match] if m]
+
+            if insert_candidates:
+                insert_pos = min(insert_candidates)
                 sql = sql[:insert_pos] + group_by_clause + sql[insert_pos:]
             else:
                 sql = sql.rstrip() + group_by_clause
+
+            if had_trailing_semicolon:
+                sql += ";"
         
         return sql
     
@@ -2464,6 +3567,179 @@ class SQLPatternCorrector:
             sql = re.sub(r'\s+GROUP\s+BY\s+\w*id\b', '', sql, flags=re.IGNORECASE)
         
         return sql
+
+    def _column_exists_anywhere(self, schema_tables: dict, col_lower: str) -> bool:
+        """True if col_lower matches any column on any table in schema_tables."""
+        c = col_lower.lower()
+        for cols in schema_tables.values():
+            if any(x.lower() == c for x in cols):
+                return True
+        return False
+
+    def _tables_with_first_and_last_name(
+        self, schema_tables: dict, tables_in_query: Set[str]
+    ) -> List[str]:
+        """Tables referenced in the query that expose first_name and last_name."""
+        out: List[str] = []
+        for t in tables_in_query:
+            if t not in schema_tables:
+                continue
+            cols = {x.lower() for x in schema_tables[t]}
+            if "first_name" in cols and "last_name" in cols:
+                out.append(t)
+        return out
+
+    def _extract_sql_aliases(self, sql: str) -> Set[str]:
+        """Lowercased table aliases from FROM / JOIN (not base table names)."""
+        aliases: Set[str] = set()
+        for m in re.finditer(
+            r"\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+(?:WHERE|JOIN|GROUP|ORDER|LIMIT|;|$))",
+            sql,
+            flags=re.IGNORECASE,
+        ):
+            if m.group(2):
+                aliases.add(m.group(2).lower())
+        for m in re.finditer(
+            r"\bJOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+ON\b)",
+            sql,
+            flags=re.IGNORECASE,
+        ):
+            if m.group(2):
+                aliases.add(m.group(2).lower())
+        return aliases
+
+    def _from_join_alias_to_table(self, sql: str) -> Dict[str, str]:
+        """Map lowercased alias -> physical table name (lowercase)."""
+        mmap: Dict[str, str] = {}
+        for m in re.finditer(
+            r"\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+(?:WHERE|JOIN|GROUP|ORDER|LIMIT|;|$))",
+            sql,
+            flags=re.IGNORECASE,
+        ):
+            t = m.group(1).lower()
+            if m.group(2):
+                mmap[m.group(2).lower()] = t
+        for m in re.finditer(
+            r"\bJOIN\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?(?=\s+ON\b)",
+            sql,
+            flags=re.IGNORECASE,
+        ):
+            t = m.group(1).lower()
+            if m.group(2):
+                mmap[m.group(2).lower()] = t
+        return mmap
+
+    def _fix_composite_entity_first_last_columns(
+        self, sql: str, schema_tables: dict, tables_in_query: Set[str]
+    ) -> str:
+        """
+        Map hallucinated {entity}_first_name / {entity}_last_name to real columns.
+
+        Example: customer_first_name + customers table with first_name/last_name
+        -> customers.first_name (only when customer_first_name is not a real column).
+        """
+        person_tables = self._tables_with_first_and_last_name(schema_tables, tables_in_query)
+        if not person_tables:
+            return sql
+        # Prefer longer table names so employees wins over employee substring edge cases.
+        person_tables = sorted(person_tables, key=len, reverse=True)
+
+        for table in person_tables:
+            singular = table[:-1] if len(table) > 1 and table.endswith("s") else table
+            prefixes = {table, singular}
+            for prefix in prefixes:
+                for part in ("first_name", "last_name"):
+                    bogus = f"{prefix}_{part}"
+                    if self._column_exists_anywhere(schema_tables, bogus):
+                        continue
+                    if not re.search(rf"\b{re.escape(bogus)}\b", sql, flags=re.IGNORECASE):
+                        continue
+                    sql = re.sub(
+                        rf"(\w+)\.{re.escape(bogus)}\b",
+                        rf"{table}.{part}",
+                        sql,
+                        flags=re.IGNORECASE,
+                    )
+                    sql = re.sub(
+                        rf"\b{re.escape(bogus)}\b",
+                        f"{table}.{part}",
+                        sql,
+                        flags=re.IGNORECASE,
+                    )
+                    logger.info(
+                        "Fixed composite person column hallucination: %r -> %s.%s",
+                        bogus,
+                        table,
+                        part,
+                    )
+        return sql
+
+    def _fix_bogus_on_person_columns(
+        self, sql: str, schema_tables: dict, tables_in_query: Set[str]
+    ) -> str:
+        """
+        Fix JOIN-keyword bleed where the model emits `on.last_name` instead of `customers.last_name`.
+
+        Only runs when `on` is not a real alias and another qualified first_name/last_name
+        exists, or exactly one person table appears in the query.
+        """
+        if not re.search(r"\bon\.(first_name|last_name)\b", sql, flags=re.IGNORECASE):
+            return sql
+        aliases = self._extract_sql_aliases(sql)
+        if "on" in aliases:
+            return sql
+
+        alias_map = self._from_join_alias_to_table(sql)
+        reserved = {
+            "join",
+            "inner",
+            "left",
+            "right",
+            "outer",
+            "cross",
+            "where",
+            "group",
+            "order",
+            "select",
+            "from",
+            "having",
+            "limit",
+        }
+
+        qual: Optional[str] = None
+        for pat in (r"\b(\w+)\.first_name\b", r"\b(\w+)\.last_name\b"):
+            m = re.search(pat, sql, flags=re.IGNORECASE)
+            if not m:
+                continue
+            q_low = m.group(1).lower()
+            if q_low == "on" or q_low in reserved:
+                continue
+            if q_low in schema_tables:
+                qual = q_low
+                break
+            if q_low in alias_map:
+                qual = alias_map[q_low]
+                break
+
+        if qual is None:
+            pw = self._tables_with_first_and_last_name(schema_tables, tables_in_query)
+            if len(pw) == 1:
+                qual = pw[0]
+            else:
+                return sql
+
+        if qual not in schema_tables:
+            return sql
+
+        new_sql, n = re.subn(
+            r"\bon\.(first_name|last_name)\b",
+            rf"{qual}.\1",
+            sql,
+            flags=re.IGNORECASE,
+        )
+        if n:
+            logger.info("Fixed bogus ON-keyword column qualifier (%d occurrence(s))", n)
+        return new_sql
     
     def _fix_nonexistent_columns(self, sql: str, schema_tables: dict) -> str:
         """
@@ -2559,6 +3835,9 @@ class SQLPatternCorrector:
                         flags=re.IGNORECASE
                     )
                     logger.info(f"Fixed nonexistent column: {generic_col} → first_name, last_name")
+        
+        sql = self._fix_composite_entity_first_last_columns(sql, schema_tables, tables_in_query)
+        sql = self._fix_bogus_on_person_columns(sql, schema_tables, tables_in_query)
         
         if sql != original_sql:
             logger.info(f"Column name fixes applied:\n  Original: {original_sql}\n  Fixed: {sql}")
@@ -2797,6 +4076,10 @@ class SQLPatternCorrector:
         """
         original_sql = sql
 
+        # If SQL already filters on proper person-name columns, avoid full-query rebuild.
+        if re.search(r"\bWHERE\b[\s\S]*\b(?:\w+\.)?(?:first_name|last_name)\s*=", sql, re.IGNORECASE):
+            return sql
+
         if self._question_uses_department_membership_phrasing(question):
             person_anchor = bool(
                 re.search(r"\b(?:taught|instructed)\s+by\b", question, re.IGNORECASE)
@@ -3008,7 +4291,9 @@ class SQLPatternCorrector:
         
         return sql
     
-    def _fix_fk_string_comparison(self, sql: str, schema_tables: dict, fk_map: dict) -> str:
+    def _fix_fk_string_comparison(
+        self, sql: str, question: str, schema_tables: dict, fk_map: dict
+    ) -> str:
         """
         Fix WHERE clauses that compare FK columns to string literals.
         
@@ -3090,6 +4375,15 @@ class SQLPatternCorrector:
                 if t.lower() == fk_base + 's':
                     referenced_table = t.lower()
                     break
+
+        # Plural with -es (branch -> branches, class -> classes, address -> addresses)
+        if not referenced_table and fk_base + 'es' in [
+            t.lower() for t in schema_tables.keys()
+        ]:
+            for t in schema_tables.keys():
+                if t.lower() == fk_base + 'es':
+                    referenced_table = t.lower()
+                    break
         
         # Try singular form
         if not referenced_table and fk_base in [t.lower() for t in schema_tables.keys()]:
@@ -3121,6 +4415,21 @@ class SQLPatternCorrector:
         if not name_column:
             # No name column found, can't fix
             return sql
+
+        literal_for_where = string_value
+        if (
+            referenced_table == 'branches'
+            and name_column == 'branch_name'
+            and question
+        ):
+            # NL often says "Westside Branch" while the model uses branch_id = 'Westside'.
+            exp = re.search(
+                rf"(?i)\b({re.escape(string_value)})\s+branch\b",
+                question,
+            )
+            if exp:
+                literal_for_where = exp.group(0)
+        lit_sql = "'" + literal_for_where.replace("'", "''") + "'"
         
         # Check if there's already a JOIN to the referenced table
         has_join = re.search(
@@ -3135,7 +4444,7 @@ class SQLPatternCorrector:
             
             # Replace the WHERE clause
             old_where = match.group(0)  # Full WHERE clause
-            new_where = f"WHERE {ref_alias}.{name_column} = '{string_value}'"
+            new_where = f"WHERE {ref_alias}.{name_column} = {lit_sql}"
             sql = sql.replace(old_where, new_where)
         else:
             # Need to add JOIN before WHERE
@@ -3153,7 +4462,7 @@ class SQLPatternCorrector:
             join_clause = f" JOIN {referenced_table} ON {from_alias}.{fk_column} = {ref_alias}.{fk_column}"
             
             # New WHERE clause
-            new_where = f"WHERE {ref_alias}.{name_column} = '{string_value}'"
+            new_where = f"WHERE {ref_alias}.{name_column} = {lit_sql}"
             
             # Insert JOIN before WHERE and replace WHERE clause
             sql_before_where = sql[:where_start].rstrip()

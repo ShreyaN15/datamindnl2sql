@@ -13,6 +13,7 @@ import logging
 from app.utils.schema_builder import build_schema_from_dict, parse_schema_metadata
 from app.engines.sql_validation.validator import SQLValidator
 from app.engines.ml.query_enhancer import get_query_enhancer
+from app.engines.ml.literal_alignment import score_literal_alignment_with_question
 from app.engines.sql_validation.pattern_corrector import get_pattern_corrector
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,39 @@ class NL2SQLService:
                             flags=re.IGNORECASE
                         )
                         logger.info(f"Fixed column hallucination: '{hall}' -> 'first_name, last_name'")
+
+            # customer_first_name / employee_last_name style (composite) when real split cols exist
+            if "first_name" in columns and "last_name" in columns:
+                singular = table[:-1] if table.endswith("s") else table
+                for prefix in {table, singular}:
+                    for part in ("first_name", "last_name"):
+                        bogus = f"{prefix}_{part}"
+                        if any(
+                            bogus.lower() == (c.lower() if isinstance(c, str) else str(c).lower())
+                            for cols in schema_tables.values()
+                            for c in cols
+                        ):
+                            continue
+                        if not re.search(rf"\b{re.escape(bogus)}\b", sql, re.IGNORECASE):
+                            continue
+                        sql = re.sub(
+                            rf"(\w+)\.{re.escape(bogus)}\b",
+                            rf"{table}.{part}",
+                            sql,
+                            flags=re.IGNORECASE,
+                        )
+                        sql = re.sub(
+                            rf"\b{re.escape(bogus)}\b",
+                            f"{table}.{part}",
+                            sql,
+                            flags=re.IGNORECASE,
+                        )
+                        logger.info(
+                            "Fixed composite name hallucination in candidate: %r -> %s.%s",
+                            bogus,
+                            table,
+                            part,
+                        )
             
             # Check if table has course_name
             if 'course_name' in columns:
@@ -264,6 +298,37 @@ class NL2SQLService:
         Returns:
             Generated (and potentially corrected) SQL query
         """
+        result = self.generate_sql_with_suggestions(
+            question=question,
+            schema_text=schema_text,
+            foreign_keys=foreign_keys,
+            use_sanitizer=use_sanitizer,
+            use_enhancer=use_enhancer,
+            use_pattern_correction=use_pattern_correction,
+            num_beams=num_beams,
+            num_candidates=num_candidates,
+        )
+        return result["sql"]
+
+    def generate_sql_with_suggestions(
+        self,
+        question: str,
+        schema_text: str,
+        foreign_keys: Optional[List[Tuple[str, str, str, str]]] = None,
+        use_sanitizer: bool = True,
+        use_enhancer: bool = True,
+        use_pattern_correction: bool = True,
+        num_beams: int = 5,
+        num_candidates: int = 3
+    ) -> Dict[str, object]:
+        """
+        Generate final SQL plus raw model candidate suggestions.
+
+        Returns:
+            Dict with:
+                - sql: final SQL used by pipeline (same behavior as generate_sql)
+                - model_suggestions: raw model candidates before sanitizer/pattern correction
+        """
         if not self.is_loaded:
             self.load_model()
         
@@ -297,10 +362,11 @@ class NL2SQLService:
             )
         
         # Decode all candidates
-        candidates = [
+        raw_candidates = [
             self.tokenizer.decode(output, skip_special_tokens=True)
             for output in outputs
         ]
+        candidates = list(raw_candidates)
         
         # Fix T5 tokenization issues with comparison operators (pass question for context)
         candidates = [self._fix_comparison_operators(c, question) for c in candidates]
@@ -313,7 +379,10 @@ class NL2SQLService:
             logger.info(f"  Candidate {i+1}: {candidate}")
         
         if not use_sanitizer:
-            return candidates[0]
+            return {
+                "sql": candidates[0],
+                "model_suggestions": raw_candidates[:3]
+            }
         
         # Apply SQL sanitizer to select best candidate
         best_sql = self._select_best_candidate(
@@ -336,8 +405,14 @@ class NL2SQLService:
             )
             if best_sql != before_pattern:
                 logger.info(f"After pattern correction: {best_sql}")
+        else:
+            # Validator-only path still needs merged-token repair (e.g. member_idRDER BY).
+            best_sql = self.pattern_corrector._fix_text_corruption(best_sql)
         
-        return best_sql
+        return {
+            "sql": best_sql,
+            "model_suggestions": raw_candidates[:3]
+        }
     
     def generate_sql_with_details(
         self,
@@ -426,6 +501,8 @@ class NL2SQLService:
             )
             if corrected_sql != before_pc:
                 err_list.append("Pattern corrector adjusted SQL")
+        else:
+            corrected_sql = self.pattern_corrector._fix_text_corruption(corrected_sql)
         
         return {
             'question': question,
@@ -476,13 +553,20 @@ class NL2SQLService:
             else:
                 simplicity_bonus = max(0, (3 - join_count) * 10) + max(0, (2 - subquery_count) * 5)
             
-            score = (
-                (1000 if is_valid else 0) 
-                - (error_count * 50) 
-                - (warning_count * 5) 
-                - i 
-                + simplicity_bonus
+            literal_alignment = score_literal_alignment_with_question(
+                question, corrected_sql
             )
+
+            score = (
+                (1000 if is_valid else 0)
+                - (error_count * 70)
+                - (warning_count * 5)
+                - i
+                + simplicity_bonus
+                + literal_alignment
+            )
+            if likely_join and is_valid and join_count >= 1:
+                score += 15
             
             if score > best_score:
                 best_score = score

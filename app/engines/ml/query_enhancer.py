@@ -113,6 +113,7 @@ class QueryEnhancer:
         
         # JOIN trigger patterns - phrases that often require JOINs
         self.join_triggers = [
+            r'\balong\s+with\b',
             r'\bwith\s+(their|its|the)\s+\w+\s+(name|detail|info)',
             r'\b(each|every)\s+\w+.*\b(in|from|of)\s+\w+',
             r'\bhow\s+many\s+\w+.*\b(per|for each|in each)',

@@ -129,6 +129,21 @@ export const api = {
       if (!response.ok) throw new Error(await response.text());
       return response.json();
     },
+    executeSql: async (
+      userId: number,
+      data: { sql: string; database_id: number },
+    ) => {
+      const response = await fetch(
+        `${API_URL}/query/execute-sql?user_id=${userId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        },
+      );
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    },
 
     visualize: async (data: {
       query_result: any[];

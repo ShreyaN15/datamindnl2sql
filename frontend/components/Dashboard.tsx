@@ -10,67 +10,78 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<'connections' | 'query'>('connections');
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-xl">DM</span>
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">DataMind NL2SQL</h1>
-                <p className="text-xs text-gray-500">Natural Language to SQL Converter</p>
-              </div>
+    <div className="min-h-screen bg-white text-black selection:bg-black selection:text-white">
+      <nav className="border-b border-gray-200">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6 lg:px-8">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center bg-black text-white rounded">
+              <span className="text-xs font-bold tracking-tighter">DM</span>
             </div>
+            <div className="leading-tight">
+              <p className="text-sm font-semibold tracking-tight">DataMind</p>
+            </div>
+          </div>
 
-            <div className="flex items-center space-x-4">
-              <div className="text-right">
-                <div className="text-sm font-medium text-gray-900">{user?.username}</div>
-                <div className="text-xs text-gray-500">{user?.email}</div>
-              </div>
-              <button
-                onClick={logout}
-                className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 text-sm font-medium transition-colors"
-              >
-                Logout
-              </button>
+          <div className="flex items-center gap-6">
+            <div className="hidden text-right text-sm sm:block">
+              <p className="font-medium text-black truncate max-w-[160px]">
+                {user?.username}
+              </p>
+              <p className="text-gray-500 truncate max-w-[200px] text-xs">
+                {user?.email}
+              </p>
             </div>
+            <button
+              onClick={logout}
+              className="text-sm font-medium text-gray-500 hover:text-black transition-colors"
+            >
+              Log out
+            </button>
           </div>
         </div>
       </nav>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-6">
-          <div className="border-b border-gray-200">
-            <nav className="-mb-px flex space-x-8">
-              <button
-                onClick={() => setActiveTab('connections')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === 'connections'
-                    ? 'border-indigo-500 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                Database Connections
-              </button>
-              <button
-                onClick={() => setActiveTab('query')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === 'query'
-                    ? 'border-indigo-500 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                NL2SQL Query 
-              </button>
-            </nav>
+      <main className="mx-auto max-w-7xl px-6 pb-12 pt-10 lg:px-8">
+        <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
+          <div>
+            <h1 className="text-4xl font-medium tracking-tight text-black">Workspace</h1>
+            <p className="mt-2 text-gray-500 text-lg">
+              Manage your database connections or query with natural language.
+            </p>
+          </div>
+          <div className="flex gap-4">
+            <button
+              onClick={() => setActiveTab('connections')}
+              className={`pb-2 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'connections'
+                  ? 'border-black text-black'
+                  : 'border-transparent text-gray-500 hover:text-black hover:border-gray-300'
+              }`}
+            >
+              Connections
+            </button>
+            <button
+              onClick={() => setActiveTab('query')}
+              className={`pb-2 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'query'
+                  ? 'border-black text-black'
+                  : 'border-transparent text-gray-500 hover:text-black hover:border-gray-300'
+              }`}
+            >
+              Studio
+            </button>
           </div>
         </div>
 
-        {activeTab === 'connections' && <DatabaseConnections />}
-        {activeTab === 'query' && <NL2SQLQuery />}
-      </div>
+        <div className="animate-in fade-in slide-in-from-bottom-2 duration-500 ease-in-out">
+          {activeTab === 'connections' && (
+            <DatabaseConnections />
+          )}
+          {activeTab === 'query' && (
+            <NL2SQLQuery />
+          )}
+        </div>
+      </main>
     </div>
   );
 }

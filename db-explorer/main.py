@@ -13,6 +13,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -34,6 +35,7 @@ class ConnectionState:
     display_name: str
     database_name: str
     table_names: List[str] = field(default_factory=list)
+    persist_id: Optional[str] = None
 
 
 _connections: Dict[str, ConnectionState] = {}
@@ -58,6 +60,7 @@ class ConnectBody(BaseModel):
     database_name: str = Field(..., min_length=1, max_length=500)
     username: Optional[str] = ""
     password: Optional[str] = ""
+    persist_id: Optional[str] = Field(None, max_length=128)
 
 
 def _create_engine_from_body(body: ConnectBody) -> Engine:
@@ -133,10 +136,12 @@ def api_connect(body: ConnectBody):
             display_name=body.name,
             database_name=body.database_name,
             table_names=tables,
+            persist_id=body.persist_id,
         )
 
     return {
         "connection_id": cid,
+        "persist_id": body.persist_id,
         "name": body.name,
         "db_type": body.db_type.lower(),
         "database_name": body.database_name,
@@ -150,6 +155,7 @@ def api_list_connections():
         items = [
             {
                 "id": cid,
+                "persist_id": st.persist_id,
                 "name": st.display_name,
                 "db_type": st.db_type,
                 "database_name": st.database_name,
@@ -193,12 +199,21 @@ def api_preview(connection_id: str, table_name: str):
 
     qtable = _quote_table(st.engine, table_name)
 
-    with st.engine.connect() as conn:
-        result = conn.execute(text(f"SELECT * FROM {qtable} LIMIT 100"))
-        keys = list(result.keys())
-        data_rows = [dict(zip(keys, row)) for row in result.fetchall()]
+    try:
+        with st.engine.connect() as conn:
+            result = conn.execute(text(f"SELECT * FROM {qtable} LIMIT 100"))
+            keys = list(result.keys())
+            data_rows = [dict(m) for m in result.mappings().all()]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Preview query failed for {table_name!r}: {e}",
+        ) from e
 
-    return {"columns": keys, "rows": data_rows}
+    # Normalize Decimals, dates, etc. so the response always JSON-encodes reliably.
+    return jsonable_encoder({"columns": keys, "rows": data_rows})
 
 
 def _get_connection(connection_id: str) -> ConnectionState:

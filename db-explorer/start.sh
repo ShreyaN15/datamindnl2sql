@@ -11,6 +11,7 @@ if [[ ! -d "$VENV" ]]; then
 fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
-pip install -q -r requirements.txt
+# Use the venv interpreter so pip and runtime match (avoids broken mixed 3.13/3.14 installs).
+python3 -m pip install -q -r requirements.txt
 
 exec uvicorn main:app --host 0.0.0.0 --port "$PORT"

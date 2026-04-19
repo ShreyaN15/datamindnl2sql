@@ -290,57 +290,57 @@ export default function DataVisualization({ chartType, data, config }: DataVisua
   };
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-10 shadow-sm max-w-full">
+    <div className="bg-white border border-gray-200 rounded p-8 max-w-full">
       <div className="mb-8">
         <div className="flex items-center justify-between mb-2">
-          <h4 className="text-xl font-semibold text-gray-900">
+          <h4 className="text-xl font-medium text-black">
             Data Visualization
           </h4>
-          <span className="text-xs font-medium text-gray-600 bg-gray-100 px-3 py-1.5 rounded-full">
+          <span className="text-xs font-medium text-gray-500 bg-gray-100 px-3 py-1 rounded">
             {chartType.toUpperCase()} RECOMMENDED
           </span>
         </div>
         {config.description && (
-          <p className="text-sm text-gray-600 mt-2">{config.description}</p>
+          <p className="text-sm text-gray-500 mt-2">{config.description}</p>
         )}
         
         {/* Chart Type Toggle */}
-        <div className="mt-4 flex items-center gap-2">
-          <span className="text-sm text-gray-600 font-medium">View as:</span>
-          <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+        <div className="mt-4 flex items-center gap-3">
+          <span className="text-sm text-gray-500">View as:</span>
+          <div className="inline-flex rounded border border-gray-200 bg-gray-50 p-1">
             <button
               onClick={() => setSelectedChartType('bar')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              className={`px-4 py-1.5 text-sm font-medium rounded transition-all ${
                 selectedChartType === 'bar'
-                  ? 'bg-white text-indigo-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
+                  ? 'bg-white text-black border border-gray-200 shadow-sm'
+                  : 'text-gray-500 hover:text-black'
               }`}
             >
                Bar
             </button>
             <button
               onClick={() => setSelectedChartType('pie')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              className={`px-4 py-1.5 text-sm font-medium rounded transition-all ${
                 selectedChartType === 'pie'
-                  ? 'bg-white text-indigo-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
+                  ? 'bg-white text-black border border-gray-200 shadow-sm'
+                  : 'text-gray-500 hover:text-black'
               }`}
             >
                Pie
             </button>
             <button
               onClick={() => setSelectedChartType('line')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              className={`px-4 py-1.5 text-sm font-medium rounded transition-all ${
                 selectedChartType === 'line'
-                  ? 'bg-white text-indigo-600 shadow-sm'
-                  : 'text-gray-600 hover:text-gray-900'
+                  ? 'bg-white text-black border border-gray-200 shadow-sm'
+                  : 'text-gray-500 hover:text-black'
               }`}
             >
                Line
             </button>
           </div>
           {selectedChartType !== chartType && (
-            <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded">
+            <span className="text-xs text-yellow-600 bg-yellow-50 px-2 py-1 border border-yellow-100 rounded">
               Custom view
             </span>
           )}

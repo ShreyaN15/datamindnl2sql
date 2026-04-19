@@ -11,6 +11,7 @@ from app.schemas.query import (
     NL2SQLRequest, 
     NL2SQLResponse, 
     NL2SQLDetailedResponse,
+    SQLExecutionRequest,
     QueryExecutionResult,
     VisualizationRequest,
     VisualizationResponse
@@ -25,6 +26,73 @@ from app.db.models import DatabaseConnection, User
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.post(
+    "/execute-sql",
+    response_model=QueryExecutionResult,
+    summary="Execute SQL query directly",
+    description="Executes a provided SQL query against a selected database connection"
+)
+async def execute_sql(
+    request: SQLExecutionRequest,
+    user_id: int = Query(..., description="User ID"),
+    db: Session = Depends(get_db)
+):
+    """Execute a raw SQL query without NL2SQL generation."""
+    try:
+        db_conn = db.query(DatabaseConnection).filter(
+            DatabaseConnection.id == request.database_id,
+            DatabaseConnection.user_id == user_id
+        ).first()
+
+        if not db_conn:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Database connection not found"
+            )
+
+        execution_service = get_execution_service()
+        exec_result = execution_service.execute_query(
+            sql_query=request.sql,
+            db_type=db_conn.db_type,
+            host=db_conn.host,
+            port=db_conn.port,
+            database=db_conn.database_name,
+            username=db_conn.username,
+            password=db_conn.password
+        )
+
+        query_type = execution_service.analyze_query_type(request.sql)
+        is_visualizable = False
+        suggested_chart = None
+
+        if exec_result['success'] and exec_result['data']:
+            is_visualizable, suggested_chart = execution_service.is_visualizable(
+                exec_result['data'],
+                exec_result['columns']
+            )
+
+        return QueryExecutionResult(
+            success=exec_result['success'],
+            data=exec_result['data'],
+            columns=exec_result['columns'],
+            row_count=exec_result['row_count'],
+            has_more=exec_result['has_more'],
+            error=exec_result['error'],
+            query_type=query_type,
+            is_visualizable=is_visualizable,
+            suggested_chart=suggested_chart
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing SQL: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to execute SQL: {str(e)}"
+        )
 
 
 @router.post(
@@ -88,17 +156,21 @@ async def generate_sql(
                 question=request.question,
                 schema_text=schema_text,
                 foreign_keys=fks,
-                use_sanitizer=request.use_sanitizer
+                use_sanitizer=request.use_sanitizer,
+                use_pattern_correction=request.use_pattern_correction,
             )
             return NL2SQLDetailedResponse(**result)
         else:
             # Generate SQL
-            sql = nl2sql_service.generate_sql(
+            sql_result = nl2sql_service.generate_sql_with_suggestions(
                 question=request.question,
                 schema_text=schema_text,
                 foreign_keys=fks,
-                use_sanitizer=request.use_sanitizer
+                use_sanitizer=request.use_sanitizer,
+                use_pattern_correction=request.use_pattern_correction,
             )
+            sql = sql_result["sql"]
+            model_suggestions = sql_result.get("model_suggestions", [])
             
             # Execute query if requested
             execution_result = None
@@ -159,6 +231,7 @@ async def generate_sql(
             return NL2SQLResponse(
                 sql=sql,
                 question=request.question,
+                model_suggestions=model_suggestions,
                 execution_result=execution_result
             )
     

@@ -247,6 +247,10 @@
   <header>
     <div>
       <h1>DB Explorer <span class="sub">read-only demo</span></h1>
+      <p class="hint" style="margin:0.35rem 0 0;font-size:0.8125rem;">
+        Saved connections stay in this browser (localStorage, including passwords) and reconnect after refresh or server restart.
+        Open this UI from the same URL as the API (for example <code>http://127.0.0.1:3001</code>), not from a different port or <code>file://</code>, or table previews will fail.
+      </p>
     </div>
   </header>
 
@@ -346,6 +350,80 @@
 
     const defaultPorts = { postgresql: 5432, mysql: 3306, sqlite: null, mssql: 1433, oracle: 1521 };
 
+    const STORAGE_CONNECTIONS = 'db-explorer-saved-connections-v1';
+    const STORAGE_ACTIVE_PERSIST = 'db-explorer-active-persist-id-v1';
+
+    function loadPersistedList() {
+      try {
+        const raw = localStorage.getItem(STORAGE_CONNECTIONS);
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function savePersistedList(list) {
+      localStorage.setItem(STORAGE_CONNECTIONS, JSON.stringify(list));
+    }
+
+    function recordFromPayload(persistId, payload) {
+      return {
+        persist_id: persistId,
+        name: payload.name,
+        db_type: payload.db_type,
+        host: payload.host != null ? payload.host : null,
+        port: payload.port != null ? payload.port : null,
+        database_name: payload.database_name,
+        username: payload.username != null ? payload.username : '',
+        password: payload.password != null ? payload.password : '',
+      };
+    }
+
+    function buildConnectPayloadFromRecord(rec) {
+      const t = rec.db_type || 'postgresql';
+      const payload = {
+        name: rec.name,
+        db_type: t,
+        database_name: rec.database_name,
+        username: rec.username || '',
+        password: rec.password || '',
+        persist_id: rec.persist_id,
+      };
+      if (t !== 'sqlite') {
+        payload.host = rec.host || 'localhost';
+        payload.port =
+          rec.port != null && rec.port !== '' ? parseInt(String(rec.port), 10) : null;
+        if (!Number.isFinite(payload.port)) payload.port = null;
+      } else {
+        payload.host = null;
+        payload.port = null;
+      }
+      return payload;
+    }
+
+    async function restorePersistedConnections() {
+      const saved = loadPersistedList();
+      if (!saved.length) return;
+      for (const rec of saved) {
+        try {
+          const payload = buildConnectPayloadFromRecord(rec);
+          if (payload.db_type === 'mssql' || payload.db_type === 'oracle') continue;
+          await api('POST', '/api/connect', payload);
+        } catch (_) {
+          /* keep entry so user can fix credentials; skip reconnect */
+        }
+      }
+      await refreshConnectionsList();
+      const want = localStorage.getItem(STORAGE_ACTIVE_PERSIST);
+      let el = null;
+      if (want && /^[a-zA-Z0-9-]+$/.test(want)) {
+        el = document.querySelector('#databases-list .db-item[data-persist-id="' + want + '"]');
+      }
+      if (!el) el = document.querySelector('#databases-list .db-item');
+      if (el && el.dataset.id) selectConnection(el.dataset.id, el);
+    }
+
     function syncDbTypeUI() {
       const t = dbType.value;
       const isSqlite = t === 'sqlite';
@@ -373,7 +451,9 @@
       if (typeof detail === 'string') return detail;
       if (Array.isArray(detail))
         return detail.map((x) => (x && x.msg) || JSON.stringify(x)).join('; ');
-      return 'Request failed';
+      if (detail && typeof detail === 'object')
+        return JSON.stringify(detail);
+      return 'Request failed (no JSON detail — check Network tab: wrong host/port or HTML error page)';
     }
 
     async function api(method, url, body) {
@@ -384,7 +464,12 @@
       }
       const r = await fetch(url, opt);
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(formatApiError(data.detail) || r.statusText || 'Request failed');
+      if (!r.ok) {
+        const hint = `${r.status} ${r.statusText}`.trim();
+        throw new Error(
+          formatApiError(data.detail) || hint || 'Request failed'
+        );
+      }
       return data;
     }
 
@@ -415,7 +500,15 @@
           showFormError('MS SQL and Oracle are not enabled in this demo build. Choose PostgreSQL, MySQL, or SQLite.');
           return;
         }
+        const persistId =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+        payload.persist_id = persistId;
         const created = await api('POST', '/api/connect', payload);
+        const list = loadPersistedList();
+        list.push(recordFromPayload(persistId, payload));
+        savePersistedList(list);
         await refreshConnectionsList();
         const el = document.querySelector(
           '#databases-list [data-id="' + created.connection_id + '"]'
@@ -446,6 +539,7 @@
         const row = document.createElement('div');
         row.className = 'db-item';
         row.dataset.id = c.id;
+        if (c.persist_id) row.dataset.persistId = c.persist_id;
         const main = document.createElement('div');
         main.className = 'db-item-main';
         const nm = document.createElement('div');
@@ -464,7 +558,7 @@
         rm.textContent = '×';
         rm.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          removeConnection(c.id);
+          removeConnection(c.id, c.persist_id || row.dataset.persistId || '');
         });
         row.appendChild(main);
         row.appendChild(rm);
@@ -485,6 +579,11 @@
 
     async function selectConnection(id, el) {
       activeConnectionId = id;
+      if (el && el.dataset.persistId) {
+        localStorage.setItem(STORAGE_ACTIVE_PERSIST, el.dataset.persistId);
+      } else {
+        localStorage.removeItem(STORAGE_ACTIVE_PERSIST);
+      }
       document.querySelectorAll('.db-item').forEach((n) => n.classList.remove('active'));
       if (el) el.classList.add('active');
       document.querySelectorAll('.table-item').forEach((n) => n.classList.remove('active'));
@@ -497,10 +596,17 @@
       await loadTablesForActive();
     }
 
-    async function removeConnection(id) {
+    async function removeConnection(id, persistId) {
       try {
         await api('DELETE', `/api/connections/${id}`);
       } catch (_) {}
+      if (persistId) {
+        const next = loadPersistedList().filter((r) => r.persist_id !== persistId);
+        savePersistedList(next);
+        if (localStorage.getItem(STORAGE_ACTIVE_PERSIST) === persistId) {
+          localStorage.removeItem(STORAGE_ACTIVE_PERSIST);
+        }
+      }
       if (activeConnectionId === id) {
         activeConnectionId = null;
         $('tables-section').style.display = 'none';
@@ -596,6 +702,8 @@
         tbody.appendChild(tr);
       }
     }
+
+    restorePersistedConnections().catch(() => {});
 
     $('row-filter').addEventListener('input', () => {
       const q = $('row-filter').value.trim().toLowerCase();

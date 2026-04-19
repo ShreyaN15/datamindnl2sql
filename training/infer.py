@@ -624,6 +624,13 @@ SCHEMA_TABLES, COLUMN_TO_TABLES = build_schema_metadata(SCHEMA)
 SQL_VALIDATOR = SQLValidator(SCHEMA_TABLES, COLUMN_TO_TABLES, FOREIGN_KEYS)
 
 
+def _fix_merged_sql_tokens(sql: str) -> str:
+    """Repair T5-style merged keywords (e.g. member_idRDER BY) without full pattern corrector."""
+    from app.engines.sql_validation.pattern_corrector import get_pattern_corrector
+
+    return get_pattern_corrector()._fix_text_corruption(sql)
+
+
 def ask(question: str, use_sanitizer: bool = True, num_beams: int = 5, num_return_sequences: int = 3) -> str:
     """
     Generate SQL with optional SQL Sanitizer validation and correction..
@@ -671,6 +678,7 @@ def ask(question: str, use_sanitizer: bool = True, num_beams: int = 5, num_retur
     
     for i, candidate in enumerate(candidates):
         is_valid, corrected_sql, errors = SQL_VALIDATOR.validate_and_fix(candidate)
+        corrected_sql = _fix_merged_sql_tokens(corrected_sql)
         
         # Scoring system (enhanced):
         # +1000 for valid SQL (no ERROR markers)
@@ -721,6 +729,7 @@ def ask_with_details(question: str, use_sanitizer: bool = True) -> dict:
     
     if use_sanitizer:
         is_valid, corrected_sql, errors = SQL_VALIDATOR.validate_and_fix(raw_sql)
+        corrected_sql = _fix_merged_sql_tokens(corrected_sql)
         return {
             'question': question,
             'raw_sql': raw_sql,

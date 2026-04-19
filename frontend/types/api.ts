@@ -76,5 +76,6 @@ export interface QueryExecutionResult {
 export interface NL2SQLResponse {
   sql: string;
   question: string;
+  model_suggestions?: string[];
   execution_result?: QueryExecutionResult;
 }
